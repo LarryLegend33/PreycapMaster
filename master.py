@@ -875,7 +875,11 @@ class Experiment():
 #        self.fluor_data = pickle.load(open('fluordata.pkl', 'rb'))
         self.set_types()
         self.nans_in_original = count_nans(self.fishdata)
-        self.pitch_fix()
+        
+#        self.pitch_fix()
+# NOTE THAT THE ORIGINAL PHINALIR PARSING HAD A MISTAKE IN THE
+# EDGE CASES OF PITCH. THIS FUNCTION FIXED IT, BUT NOW IT'S FIXED IN THE PARSING FUNCTION,
+# SO IT'S COMMENTED OUT HERE. 
         self.filter_fishdata()
         self.delta_ha = []
         self.vectVcalc(2)
