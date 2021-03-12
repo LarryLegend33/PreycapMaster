@@ -76,18 +76,18 @@ class Para:
 
 
 class ParaMaster2D():
-    def __init__(self, directory):
+    def __init__(self, directory, startframe, endframe):
         self.framerate = 100
         self.directory = directory
         self.decimated_vids = False
         self.startover = False
         self.all_xy_para = []
+        self.xy_matrix = []
         self.distance_thresh = 100
         self.length_thresh = 30
         self.time_thresh = 60
         self.filter_width = 5
         self.paravectors = []
-        self.paravectors_normalized = []
         self.dots = []
         self.makemovies = False
         self.analyzed_frames = deque()
@@ -99,9 +99,10 @@ class ParaMaster2D():
         self.sec_per_br_frame = 2
         self.frames_per_mode = 20
         self.backgrounds = []
-        self.framewindow = [1, -1]
+        self.framewindow = [startframe, endframe]
         self.pvid_id = [file_id for file_id in
-                        os.listdir(directory) if file_id[-4:] == '.AVI'][0]
+                        os.listdir(self.directory) if file_id[-4:] == '.AVI'][0]
+        self.total_numframes = 0
         
     def exporter(self):
         print('exporting ParaMaster')
@@ -112,59 +113,64 @@ class ParaMaster2D():
 
     def contrast_frame(self, frame_id, grayframe, prms):
     # obtains correct background window
-        br = self.backgrounds[np.floor(frame_id / (self.framerate *
-                                                   self.sec_per_br_frame *
-                                                   self.frames_per_mode))]
-        brsub = brsub_img(grayframe, br)
+        br = self.backgrounds[int(np.floor(frame_id / (self.framerate *
+                                                       self.sec_per_br_frame *
+                                                       self.frames_per_mode)))].astype(np.uint8)
+        frame_avg = np.mean(grayframe)
+        br_avg = np.mean(br)
+        img_adj = (grayframe * (br_avg / frame_avg)).astype(np.uint8)
+        brsub = cv2.absdiff(img_adj, br)
         cont_ = imcont(brsub, prms).astype(np.uint8)
         return cont_
 
     def make_backgrounds(self):
+        print("IN BACKGROUNDS")
         curr_frame = cv2.CAP_PROP_POS_FRAMES
         fc = cv2.CAP_PROP_FRAME_COUNT
-        pvid_vcap = cv2.VideoCapture(data_directory + pvid_id)
-        numframes = pvid_vcap.get(fc)
-        ir_br_frames_to_mode = range(self.framewindow[0], numframes,
-                                     self.sec_per_br_frame * self.framerate)
+        pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
+        self.total_numframes = pvid_vcap.get(fc)
+        ir_br_frames_to_mode = range(1,
+                                     int(self.total_numframes),
+                                     int(self.sec_per_br_frame * self.framerate))
         ir_temp = []
-        ir_backgrounds = []
         for frame in ir_br_frames_to_mode:
-            pvid_vcap.set(curr_frame, i)
+            pvid_vcap.set(curr_frame, frame)
             ret, im = pvid_vcap.read()
             img = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
             ir_temp.append(img)
             if len(ir_temp) % self.frames_per_mode == 0:
                 self.backgrounds.append(
                     calc_median(ir_temp,
-                                np.zeros([1280, 1024])))
+                                np.zeros([1024, 1280])))
                 ir_temp = []
         # accounts for leftovers at the end
         if ir_temp:
             self.backgrounds.append(calc_median(ir_temp,
-                                                np.zeros([1280, 1024])))
+                                                np.zeros([1024, 1280])))
             ir_temp = []
-        np.save(data_directory + 'backgrounds.npy', self.backgrounds)
+        np.save(self.directory + 'backgrounds.npy', self.backgrounds)
 
     def findpara(self, params):
         # filtering_params give erosion, dilation, threshold, and area for para finding
         filtering_params, area = params
-        paramecia = []
+        curr_frame = cv2.CAP_PROP_POS_FRAMES
         completed_para_records = []
-        pvid_vcap = cv2.VideoCapture(self.directory + self.pvid_id)
-
-        for framenum in range(1, self.framewindow[1]):
+        pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
+        firstframe = True
+        pvid_vcap.set(curr_frame, self.framewindow[0])
+        for framenum in range(self.framewindow[0], self.framewindow[1]):
             ret, im = pvid_vcap.read()
-            im_contrasted = contrast_frame(im,
-                                           framenum,
-                                           filtering_params)
-            im_contrasted_color = cv2.cvtColor(im_contrasted, cv2.COLOR_GRAY2RGB)
+            im_gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+            im_contrasted = self.contrast_frame(framenum, im_gray,
+                                                filtering_params)
+         #   im_contrasted_color = cv2.cvtColor(im_contrasted, cv2.COLOR_GRAY2RGB)
             self.analyzed_frames.append(im_contrasted)
             rim, contours, hierarchy = cv2.findContours(
-                cont_top, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                im_contrasted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             parafilter = [cv2.minEnclosingCircle(t)[0] for t in contours
                           if area[0] <= cv2.contourArea(t) < area[1]]
             for para in parafilter:
-                cv2.circle(im_contrasted_color, (int(para[0]), int(para[1])), 3,
+                cv2.circle(im, (int(para[0]), int(para[1])), 3,
                            (0, 0, 255), -1)
             if firstframe:
                 firstframe = False
@@ -174,23 +180,26 @@ class ParaMaster2D():
                 xylist = map(lambda n: n.nearby(parafilter), para_objects)
                 newpara = [Para(framenum, cord) for cord in parafilter]
                 para_objects = para_objects + newpara
-                complete_records = filter(lambda x: x.completed, para_objects)
-                completed_para_records = completed_para_recors + complete_records
-                para_objects = filter(lambda x: not x.completed, para_objects)
+                paramecia = list(filter(lambda x: x.completed, para_objects))
+                completed_para_records = completed_para_records + paramecia
+                para_objects = list(filter(lambda x: not x.completed, para_objects))
 #current para list p_t and p_s are cleansed of records that are complete.
         self.watch_event()
 
-        modify = raw_input('Modify Videos?: ')
+
+        # Once you get this right, give option to extend analysis until the end of the movie. 
+        modify = input('Modify Videos?: ')
         if modify == 'r':
-            modify = repeat_vids()
-        if modify == 'q':
+            modify = self.repeat_vids()
+        if modify == 's':
             self.startover = True
-            return
+            self.framewindow = [self.framewindow[0], self.total_numframes]
+            self.findpara(params)
         if modify == 'y':
-            action = raw_input('Enter new params: ')
+            action = input('Enter new params: ')
             self.analyzed_frames = deque()
             pvid_vcap.release()
-            return self.findpara(ast.literal_eval(action))
+            self.findpara(ast.literal_eval(action))
         else:
             all_xy_para = completed_para_records + para_objects
             all_xy_para = sorted(all_xy_para, key=lambda x: len(x.location))
@@ -202,42 +211,24 @@ class ParaMaster2D():
             print('Para Found in XY')
             print(len(self.all_xy_para))
             self.analyzed_frames_original = copy.deepcopy(self.analyzed_frames)
+            self.create_coord_matrix()
             self.label_para()
             pvid_vcap.release()
 
-
-
+    def repeat_vids(self):
+        self.watch_event()
+        ra = input('Repeat, Yes, or No: ')
+        if ra == 'r':
+            return self.repeat_vids()
+        elif ra == 'y':
+            return 'y'
+        else:
+            return 'n'
 
     #This function is the most important for paramecia matching in both planes. First, an empty correlation matrix is created with len(all_xy) columns and len(all_xz) rows. The datatype is a 3-element tuple that takes a pearson coefficient, a pvalue, and a time of overlap for each para object in all_xy vs all_xz. I initialize the corrmat with 0,1 and [] for each element.
 
     def clear_frames(self):
         self.analyzed_frames = copy.deepcopy(self.analyzed_original)
-        
-    
-    def manual_match(self):
-        xy = 0
-        xz = 0
-        key = raw_input("Fix?: ")
-        if key == 'y':
-            xy = raw_input('Enter XY rec #  ')
-            xz = raw_input('Enter XZ rec #  ')
-            xy = int(xy)
-            xz = int(xz)
-            pl.close()
-            for ind_xy, up_xy in enumerate(self.unpaired_xy):
-                if up_xy[0] == xy:
-                    del self.unpaired_xy[ind_xy]
-                    break
-            for ind_xz, up_xz in enumerate(self.unpaired_xz):
-                if up_xz[0] == xz:
-                    del self.unpaired_xz[ind_xz]
-                    break
-            self.xyzrecords.append([[xy, xz, (1, 1, 500)]])
-            self.clear_frames()
-            return 1
-        else:
-            pl.close()
-            return 0
 
     def make_id_movie(self):
         fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
@@ -251,7 +242,6 @@ class ParaMaster2D():
                 break
         pvid_vw.release()
 
-        
     def watch_event(self):
         cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
         cv2.moveWindow('vid', 20, 20)
@@ -266,7 +256,7 @@ class ParaMaster2D():
         
     def label_para(self):
         temp_frames = deque()
-        frame_num = 1
+        frame_num = 0
         while True:
             try:
                 im = self.analyzed_frames.popleft()
@@ -276,35 +266,49 @@ class ParaMaster2D():
                 print(frame_num)
             para_id = 0
             # the row index of the para3Dcooords matrix defines xyz id.
-            for xyr in self.all_xy_para:
+            for para_id, xyr in enumerate(self.xy_matrix[:, frame_num]):
                 # indicates a nan.
-                if math.isnan(xyr[2][frame_num][0]):
+                if math.isnan(xyr[0]):
                     pass
                 else:
                     cv2.putText(
                         im,
-                        str(xyr[0]),
-                        (int(xyr[2][frame_num][0]),
-                         int(1024 - xyr[2][frame_num][1])),
+                        str(para_id),
+                        (int(xyr[0]),
+                             int(xyr[1])),
                         0,
                         1,
                         color=(255, 0, 255))
-                para_id += 1
             temp_frames.append(im)
             frame_num += 1
-        self.analyzed_frames = temp_top
-
+        self.analyzed_frames = temp_frames
 
     def manual_merge(self, rec1, rec2):
         p1 = self.all_xy_para[rec1]
         p2 = self.all_xy_para[rec2]
         time_win1 = p1.timestamp + len(p1.location)
-        p1.location = p1.location + [np.nan for i in range(time_win1, p2.timestamp)] + p2.location
+        p1.location = p1.location + [np.nan for i in range(
+            time_win1, p2.timestamp)] + p2.location
         del self.all_xy_para[rec2]
         self.clear_frames()
         self.label_para()
-            
-    
+
+    def create_coord_matrix(self):
+        xy_matrix = np.zeros([len(self.all_xy_para),
+                              int(self.total_numframes)],
+                             dtype='2f')
+        for row, rec in enumerate(self.all_xy_para):
+            xy_coords = [(np.nan, np.nan) for i in range(int(self.total_numframes))]
+#            xy_location_w_inv_y = [(x, 1024-y) for (x, y) in rec.location]
+            # xy_coords[rec.timestamp:rec.timestamp+len(
+            #     rec.location)] = xy_location_w_inv_y
+            xy_coords[rec.timestamp:rec.timestamp+len(
+                rec.location)] = rec.location
+            xy_matrix[row] = xy_coords
+        self.xy_matrix = xy_matrix
+
+
+        
 def imcont(image, params):
     thresh, erode_win, dilate_win, med_win = params
     r, th = cv2.threshold(image, thresh, 255, cv2.THRESH_BINARY)
@@ -315,42 +319,94 @@ def imcont(image, params):
     md = cv2.medianBlur(dl, med_win)
     return md
 
-# mean norm gets rid of luminance diffs between frames by looking at tank edge
-# illumination
-def brsub_img(img, ir_br):
-    brsub = cv2.absdiff(img, ir_br)
-    return brsub
-
-def return_paramaster_object(start_ind,
-                             end_ind,
-                             makemovies, directory, showstats, pcw):
-    paramaster = ParaMaster(start_ind, end_ind, directory, pcw)
-    if makemovies:
-        paramaster.makemovies = True
-    paramaster.parawrapper(showstats)
-    return paramaster
-
 def calc_median(deq, nump_arr):
     # so k are the values, j are the indicies.
     for j, k in enumerate(nump_arr[:, 0]):
         nump_arr[j] = np.median([x[j] for x in deq], axis=0)
     return nump_arr
 
+def calc_mode(deq, nump_arr):
+    for j, k in enumerate(nump_arr[:, 0]):
+        nump_arr[j, :] = mode(np.array([x[j, :] for x in deq]))[0]
+    return nump_arr
 
 
+def make_paramaster(directory,
+                    start_ind,
+                    end_ind):
+    paramaster = ParaMaster2D(directory, start_ind, end_ind)
+    paramaster.make_backgrounds()
+    paramaster.findpara([[10, 3, 5, 3], [6, 500]])
+    return paramaster
+
+
+def find_paravectors():
+    return 1
+
+
+def make_2D_animation():
+    states = np.concatenate([[x, x, x] for x in states])
+    sm_states = smooth_states(5, states)
+    print("Length of Para Record")
+    print(len(para_x))
+    fig = pl.figure(figsize=(12, 8))
+    p_xy_ax = fig.add_subplot(131)
+    p_xy_ax.set_title('XY COORDS')
+    p_xy_ax.set_xlim([0, 1888])
+    p_xy_ax.set_ylim([0, 1888])
+    p_xz_ax = fig.add_subplot(132)
+    p_xz_ax.set_title('XZ COORDS')
+    p_xz_ax.set_xlim([0, 1888])
+    p_xz_ax.set_ylim([0, 1888])
+    p_xy_ax.set_aspect('equal')
+    p_xz_ax.set_aspect('equal')
+    state_ax = fig.add_subplot(133)
+    state_ax.set_ylim([-.5, 3.5])
+    state_ax.set_xlim([0, len(para_x)])
+    state_ax.set_title('PARA STATE')
+    state_ax.set_aspect('auto', 'box-forced')
+    def updater(num, plotlist):
+        if num < 1:
+            return plotlist
+        px = para_x[num]
+        py = para_y[num]
+        pz = para_z[num]
+        px_hist = para_x[0:num]
+        py_hist = para_y[0:num]
+        pz_hist = para_z[0:num]
+        state_x = range(num)
+        state_y = states[0:num]
+#        smoothed_state_y = sm_states[0:num]
+        plotlist[2].set_data(px_hist, py_hist)
+        plotlist[3].set_data(px_hist, pz_hist)
+        plotlist[0].set_data(px, py)
+        plotlist[1].set_data(px, pz)
+        plotlist[4].set_data(state_x, state_y)
+#        plotlist[3].set_data(state_x, smoothed_state_y)
+        return plotlist
+    p_xy_line, = p_xy_ax.plot([], [], linewidth=1, color='g')
+    p_xz_line, = p_xz_ax.plot([], [], linewidth=1, color='g')
+    p_xy_plot, = p_xy_ax.plot([], [], marker='.', ms=15, color='m')
+    p_xz_plot, = p_xz_ax.plot([], [], marker='.', ms=15, color='m')
+    state_plot, = state_ax.plot([], [], marker='.', linestyle='None', color='k')
+  #  sm_state_plot, = state_ax.plot([], [], linewidth=1.0)
+    p_list = [p_xy_plot, p_xz_plot, p_xy_line, p_xz_line, state_plot]
+  # sm_state_plot]
+    line_ani = anim.FuncAnimation(
+        fig,
+        updater,
+        len(para_x),
+        fargs=[p_list],
+        interval=2,
+        repeat=True,
+        blit=True)
+#        line_ani.save('test.mp4')
+    pl.show()
 
 if __name__ == '__main__':
 
     # GOOD STARTING PARAMS
-    self.findpara([[10, 3, 5, 3], [10, 3, 5, 3], 6], False, True)
-    
-    pmaster = return_paramaster_object(1000,
-                                       1599,
-                                       False,
-                                       os.getcwd() + '/Fish00/',
-                                       False,
-                                       600)
-#     paramaster = ParaMaster(1499, 1550, os.getcwd() + '/Fish00/')
-#     paramaster.makemovies = False
-#     paramaster.parawrapperq(False)
-# #    paramaster.find_paravectors(False)
+    pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/Alcatraz",
+                              1,
+                              500)
+
