@@ -14,7 +14,7 @@ import matplotlib.animation as anim
 from collections import deque
 import seaborn
 import matplotlib.gridspec as gridspec
-
+from scipy.stats import mode
 
 
 class Para:
@@ -27,7 +27,7 @@ class Para:
         self.completed = False
         self.waitindex = 0
         # waits at max 4 frames before giving up on particular para.
-        self.waitmax = 4
+        self.waitmax = 10
         # max distance between para in consecutive frames in xy or xz vector space.
         self.thresh = 20
         self.double = False
@@ -84,19 +84,17 @@ class ParaMaster2D():
         self.all_xy_para = []
         self.xy_matrix = []
         self.distance_thresh = 100
-        self.length_thresh = 30
-        self.time_thresh = 60
-        self.filter_width = 5
+        self.length_thresh = 50
         self.paravectors = []
         self.dots = []
         self.makemovies = False
         self.analyzed_frames = deque()
-        self.analyzed_frames_original = deque()
+        self.analyzed_frames_raw = deque()
         self.dotprod = []
         self.velocity_mags = []
         self.length_map = np.vectorize(lambda a: a.shape[0])
         self.interp_indices = []
-        self.sec_per_br_frame = 2
+        self.sec_per_br_frame = 1
         self.frames_per_mode = 20
         self.backgrounds = []
         self.framewindow = [startframe, endframe]
@@ -113,13 +111,15 @@ class ParaMaster2D():
 
     def contrast_frame(self, frame_id, grayframe, prms):
     # obtains correct background window
-        br = self.backgrounds[int(np.floor(frame_id / (self.framerate *
-                                                       self.sec_per_br_frame *
-                                                       self.frames_per_mode)))].astype(np.uint8)
+        br = self.backgrounds[
+            int(np.floor(frame_id / (self.framerate *
+                                     self.sec_per_br_frame *
+                                     self.frames_per_mode)))].astype(np.uint8)
         frame_avg = np.mean(grayframe)
         br_avg = np.mean(br)
         img_adj = (grayframe * (br_avg / frame_avg)).astype(np.uint8)
-        brsub = cv2.absdiff(img_adj, br)
+#        brsub = cv2.absdiff(img_adj, br)
+        brsub = cv2.absdiff(grayframe.astype(np.uint8), br)
         cont_ = imcont(brsub, prms).astype(np.uint8)
         return cont_
 
@@ -140,22 +140,26 @@ class ParaMaster2D():
             ir_temp.append(img)
             if len(ir_temp) % self.frames_per_mode == 0:
                 self.backgrounds.append(
-                    calc_median(ir_temp,
-                                np.zeros([1024, 1280])))
+                    calc_mode(ir_temp,
+                              np.zeros([1024, 1280])))
                 ir_temp = []
         # accounts for leftovers at the end
         if ir_temp:
-            self.backgrounds.append(calc_median(ir_temp,
+            self.backgrounds.append(calc_mode(ir_temp,
                                                 np.zeros([1024, 1280])))
             ir_temp = []
-        np.save(self.directory + 'backgrounds.npy', self.backgrounds)
+        np.save(self.directory + '/backgrounds.npy', self.backgrounds)
 
     def findpara(self, params):
+        print("FINDING PARA")
         # filtering_params give erosion, dilation, threshold, and area for para finding
+        self.analyzed_frames = deque()
         filtering_params, area = params
         curr_frame = cv2.CAP_PROP_POS_FRAMES
+        fc = cv2.CAP_PROP_FRAME_COUNT
         completed_para_records = []
         pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
+        self.total_numframes = pvid_vcap.get(fc)
         firstframe = True
         pvid_vcap.set(curr_frame, self.framewindow[0])
         for framenum in range(self.framewindow[0], self.framewindow[1]):
@@ -163,21 +167,21 @@ class ParaMaster2D():
             im_gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
             im_contrasted = self.contrast_frame(framenum, im_gray,
                                                 filtering_params)
-         #   im_contrasted_color = cv2.cvtColor(im_contrasted, cv2.COLOR_GRAY2RGB)
-            self.analyzed_frames.append(im_contrasted)
+            im_cont_color = cv2.cvtColor(im_contrasted, cv2.COLOR_GRAY2RGB)
             rim, contours, hierarchy = cv2.findContours(
                 im_contrasted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             parafilter = [cv2.minEnclosingCircle(t)[0] for t in contours
                           if area[0] <= cv2.contourArea(t) < area[1]]
             for para in parafilter:
-                cv2.circle(im, (int(para[0]), int(para[1])), 3,
-                           (0, 0, 255), -1)
+                cv2.circle(im_cont_color, (int(para[0]), int(para[1])), 2,
+                           (255, 0, 255), -1)
+            self.analyzed_frames.append(im_cont_color)
+#            self.analyzed_frames.append(im)
             if firstframe:
                 firstframe = False
                 para_objects = [Para(framenum, pr) for pr in parafilter]
-# p_t is a list of para objects. asks if any elements of contour list are nearby each para p.
             else:
-                xylist = map(lambda n: n.nearby(parafilter), para_objects)
+                xy_list = list(map(lambda n: n.nearby(parafilter), para_objects))
                 newpara = [Para(framenum, cord) for cord in parafilter]
                 para_objects = para_objects + newpara
                 paramecia = list(filter(lambda x: x.completed, para_objects))
@@ -185,35 +189,33 @@ class ParaMaster2D():
                 para_objects = list(filter(lambda x: not x.completed, para_objects))
 #current para list p_t and p_s are cleansed of records that are complete.
         self.watch_event()
-
-
+        self.analyzed_frames_raw = copy.deepcopy(self.analyzed_frames)
+        pvid_vcap.release()
         # Once you get this right, give option to extend analysis until the end of the movie. 
         modify = input('Modify Videos?: ')
         if modify == 'r':
             modify = self.repeat_vids()
         if modify == 's':
             self.startover = True
-            self.framewindow = [self.framewindow[0], self.total_numframes]
+            self.framewindow = [self.framewindow[0], int(self.total_numframes)]
             self.findpara(params)
         if modify == 'y':
             action = input('Enter new params: ')
             self.analyzed_frames = deque()
-            pvid_vcap.release()
             self.findpara(ast.literal_eval(action))
+        if modify == 'x':
+            return ""
         else:
             all_xy_para = completed_para_records + para_objects
             all_xy_para = sorted(all_xy_para, key=lambda x: len(x.location))
             all_xy_para.reverse()
             self.all_xy_para = [para for para in all_xy_para
-                                if len(para.location) > 0]
-            self.long_xy = [para for para in self.all_xy_para
-                            if len(para.location) >= self.length_thresh]
+                                if len(para.location) > self.length_thresh]
             print('Para Found in XY')
             print(len(self.all_xy_para))
             self.analyzed_frames_original = copy.deepcopy(self.analyzed_frames)
             self.create_coord_matrix()
             self.label_para()
-            pvid_vcap.release()
 
     def repeat_vids(self):
         self.watch_event()
@@ -226,9 +228,6 @@ class ParaMaster2D():
             return 'n'
 
     #This function is the most important for paramecia matching in both planes. First, an empty correlation matrix is created with len(all_xy) columns and len(all_xz) rows. The datatype is a 3-element tuple that takes a pearson coefficient, a pvalue, and a time of overlap for each para object in all_xy vs all_xz. I initialize the corrmat with 0,1 and [] for each element.
-
-    def clear_frames(self):
-        self.analyzed_frames = copy.deepcopy(self.analyzed_original)
 
     def make_id_movie(self):
         fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
@@ -246,13 +245,40 @@ class ParaMaster2D():
         cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
         cv2.moveWindow('vid', 20, 20)
         for im in self.analyzed_frames:
-            im = cv2.resize(im, (700, 700))
+            im = cv2.resize(im, (800, 800))
             cv2.imshow('vid', im)
-            key_entered = cv2.waitKey(15)
+            key_entered = cv2.waitKey(1)
             if key_entered == 50:
                 break
         cv2.destroyAllWindows()
         cv2.waitKey(1)
+
+    def show_labeled_ir_frames(self):
+        cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
+        cv2.moveWindow('vid', 20, 20)
+        curr_frame = cv2.CAP_PROP_POS_FRAMES
+        fc = cv2.CAP_PROP_FRAME_COUNT
+        pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
+        for frame in range(self.framewindow[0], self.framewindow[1]):
+            ret, im = pvid_vcap.read()
+            for para_id, xyr in enumerate(self.xy_matrix[:, frame]):
+                # indicates a nan.
+                if math.isnan(xyr[0]):
+                    pass
+                else:
+                    cv2.putText(
+                        im,
+                        str(para_id),
+                        (int(xyr[0]+7),
+                         int(xyr[1])),
+                        0,
+                        .75,
+                        color=(255, 0, 255))
+            cv2.imshow('vid', im)
+            cv2.waitKey(1)
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
+
         
     def label_para(self):
         temp_frames = deque()
@@ -274,11 +300,11 @@ class ParaMaster2D():
                     cv2.putText(
                         im,
                         str(para_id),
-                        (int(xyr[0]),
-                             int(xyr[1])),
+                        (int(xyr[0]+5),
+                         int(xyr[1])),
                         0,
-                        1,
-                        color=(255, 0, 255))
+                        .5,
+                        color=(255, 255, 0))
             temp_frames.append(im)
             frame_num += 1
         self.analyzed_frames = temp_frames
@@ -290,7 +316,15 @@ class ParaMaster2D():
         p1.location = p1.location + [np.nan for i in range(
             time_win1, p2.timestamp)] + p2.location
         del self.all_xy_para[rec2]
-        self.clear_frames()
+        self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
+        self.label_para()
+
+    def manual_remove(self, reclist):
+        reclist.sort()
+        reclist.reverse()
+        for rec in reclist:
+            del self.all_xy_para[rec]
+        self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
         self.label_para()
 
     def create_coord_matrix(self):
@@ -335,8 +369,9 @@ def make_paramaster(directory,
                     start_ind,
                     end_ind):
     paramaster = ParaMaster2D(directory, start_ind, end_ind)
-    paramaster.make_backgrounds()
-    paramaster.findpara([[10, 3, 5, 3], [6, 500]])
+#    paramaster.make_backgrounds()
+    paramaster.backgrounds = np.load(directory+"/backgrounds.npy")
+    paramaster.findpara([[3, 3, 5, 3], [10, 500]])
     return paramaster
 
 
