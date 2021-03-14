@@ -12,9 +12,10 @@ from scipy.stats.stats import pearsonr
 import copy
 import matplotlib.animation as anim
 from collections import deque
-import seaborn
-import matplotlib.gridspec as gridspec
 from scipy.stats import mode
+import seaborn as sns
+import pandas as pd
+import itertools
 
 
 class Para:
@@ -29,7 +30,7 @@ class Para:
         # waits at max 4 frames before giving up on particular para.
         self.waitmax = 10
         # max distance between para in consecutive frames in xy or xz vector space.
-        self.thresh = 20
+        self.thresh = 5
         self.double = False
 
     def endrecord(self):
@@ -79,20 +80,15 @@ class ParaMaster2D():
     def __init__(self, directory, startframe, endframe):
         self.framerate = 100
         self.directory = directory
-        self.decimated_vids = False
-        self.startover = False
         self.all_xy_para = []
         self.xy_matrix = []
         self.distance_thresh = 100
         self.length_thresh = 50
         self.paravectors = []
         self.dots = []
-        self.makemovies = False
         self.analyzed_frames = deque()
         self.analyzed_frames_raw = deque()
-        self.dotprod = []
         self.velocity_mags = []
-        self.length_map = np.vectorize(lambda a: a.shape[0])
         self.interp_indices = []
         self.sec_per_br_frame = 1
         self.frames_per_mode = 20
@@ -101,6 +97,14 @@ class ParaMaster2D():
         self.pvid_id = [file_id for file_id in
                         os.listdir(self.directory) if file_id[-4:] == '.AVI'][0]
         self.total_numframes = 0
+        self.US_frames = (np.loadtxt(directory + "/" +
+                                     [file_id for file_id in
+                                      os.listdir(self.directory) if file_id[-12:] ==
+                                      'US_times.txt'][0]) / 10).astype(np.int)
+        self.CS_frames = (np.loadtxt(directory + "/" + 
+                                     [file_id for file_id in
+                                      os.listdir(self.directory) if file_id[-12:] ==
+                                      'CS_times.txt'][0]) / 10).astype(np.int)
         
     def exporter(self):
         print('exporting ParaMaster')
@@ -154,10 +158,10 @@ class ParaMaster2D():
         print("FINDING PARA")
         # filtering_params give erosion, dilation, threshold, and area for para finding
         self.analyzed_frames = deque()
+        completed_para_records = []
         filtering_params, area = params
         curr_frame = cv2.CAP_PROP_POS_FRAMES
         fc = cv2.CAP_PROP_FRAME_COUNT
-        completed_para_records = []
         pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
         self.total_numframes = pvid_vcap.get(fc)
         firstframe = True
@@ -198,11 +202,11 @@ class ParaMaster2D():
         if modify == 's':
             self.startover = True
             self.framewindow = [self.framewindow[0], int(self.total_numframes)]
-            self.findpara(params)
+            return self.findpara(params)
         if modify == 'y':
             action = input('Enter new params: ')
             self.analyzed_frames = deque()
-            self.findpara(ast.literal_eval(action))
+            return self.findpara(ast.literal_eval(action))
         if modify == 'x':
             return ""
         else:
@@ -213,7 +217,6 @@ class ParaMaster2D():
                                 if len(para.location) > self.length_thresh]
             print('Para Found in XY')
             print(len(self.all_xy_para))
-            self.analyzed_frames_original = copy.deepcopy(self.analyzed_frames)
             self.create_coord_matrix()
             self.label_para()
 
@@ -229,29 +232,24 @@ class ParaMaster2D():
 
     #This function is the most important for paramecia matching in both planes. First, an empty correlation matrix is created with len(all_xy) columns and len(all_xz) rows. The datatype is a 3-element tuple that takes a pearson coefficient, a pvalue, and a time of overlap for each para object in all_xy vs all_xz. I initialize the corrmat with 0,1 and [] for each element.
 
-    def make_id_movie(self):
+
+    def watch_event(self, *make_movie):
         fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
         pvid_vw = cv2.VideoWriter('pvid_id_movie.AVI', fourcc, 30,
                                   (1280, 1024), True)
-        while True:
-            try:
-                im = self.analyzed_frames.popleft()
-                pvid_vw.write(im)
-            except IndexError:
-                break
-        pvid_vw.release()
 
-    def watch_event(self):
         cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
         cv2.moveWindow('vid', 20, 20)
-        for im in self.analyzed_frames:
-            im = cv2.resize(im, (800, 800))
-            cv2.imshow('vid', im)
-            key_entered = cv2.waitKey(1)
-            if key_entered == 50:
-                break
+        for fr, im in enumerate(self.analyzed_frames):
+#            im = cv2.resize(im, (800, 800))
+            if fr % 5 == 0:
+                cv2.imshow('vid', im)
+                key_entered = cv2.waitKey(1)
+                if key_entered == 50:
+                    break
         cv2.destroyAllWindows()
         cv2.waitKey(1)
+
 
     def show_labeled_ir_frames(self):
         cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
@@ -260,22 +258,44 @@ class ParaMaster2D():
         fc = cv2.CAP_PROP_FRAME_COUNT
         pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
         for frame in range(self.framewindow[0], self.framewindow[1]):
+            print(frame)
             ret, im = pvid_vcap.read()
-            for para_id, xyr in enumerate(self.xy_matrix[:, frame]):
-                # indicates a nan.
-                if math.isnan(xyr[0]):
-                    pass
-                else:
-                    cv2.putText(
-                        im,
-                        str(para_id),
-                        (int(xyr[0]+7),
-                         int(xyr[1])),
-                        0,
-                        .75,
-                        color=(255, 0, 255))
-            cv2.imshow('vid', im)
-            cv2.waitKey(1)
+            if frame % 10 == 0:
+                for para_id, xyr in enumerate(self.xy_matrix[:, frame]):
+                    # indicates a nan.
+                    if math.isnan(xyr[0]):
+                        pass
+                    else:
+                        cv2.putText(
+                            im,
+                            str(para_id),
+                            (int(xyr[0]+7),
+                             int(xyr[1])),
+                            0,
+                            .5,
+                            color=(255, 255, 0))
+                    if any(map(lambda x: x < frame < x + 50, self.US_frames)):
+                        cv2.putText(
+                            im,
+                            "US ON",
+                            (20, 30),
+                            0,
+                            2,
+                            color=(255, 0, 255),
+                            thickness=2)
+                    if any(map(lambda x: x < frame < x + 50, self.CS_frames)):
+                        cv2.putText(
+                            im,
+                            "CS ON",
+                            (20, 30),
+                            0,
+                            2,
+                            color=(100, 0, 255),
+                            thickness=2)
+                cv2.imshow('vid', im)
+                key_entered = cv2.waitKey(1)
+                if key_entered == 50:
+                    break
         cv2.destroyAllWindows()
         cv2.waitKey(1)
 
@@ -342,7 +362,23 @@ class ParaMaster2D():
         self.xy_matrix = xy_matrix
 
 
-        
+def plot_xy_trajectories(pmaster):
+    # need random color from para object and the xy_matrix
+    # dataframe needs to be like ParaID, frame, xcoord, ycoord
+    fig, ax = pl.subplots(1, 2)
+    df_dict = {'frames': list(itertools.chain.from_iterable([
+        range(pmaster.xy_matrix.shape[1]) for i in range(pmaster.xy_matrix.shape[0])])),
+               'xcoords': list(itertools.chain.from_iterable([x for x in pmaster.xy_matrix[:,:, 0]])),
+               'ycoords': list(itertools.chain.from_iterable([x for x in pmaster.xy_matrix[:,:, 1]])),
+               'para_id': list(itertools.chain.from_iterable([i*np.ones(pmaster.xy_matrix.shape[1]) for i in range(pmaster.xy_matrix.shape[0])]))}
+    df = pd.DataFrame(df_dict)
+    fig, ax = pl.subplots()
+    sns.lineplot(data=df, x='frames', y='xcoords', ax=ax)
+    for usframe, csframe in zip(pmaster.US_frames, pmaster.CS_frames):
+        ax.vlines(x=usframe, ymin=0, ymax=1024, color='yellow')
+        ax.vlines(x=csframe, ymin=0, ymax=1024, color='gray')
+    pl.show()
+    return df        
 def imcont(image, params):
     thresh, erode_win, dilate_win, med_win = params
     r, th = cv2.threshold(image, thresh, 255, cv2.THRESH_BINARY)
@@ -441,7 +477,7 @@ def make_2D_animation():
 if __name__ == '__main__':
 
     # GOOD STARTING PARAMS
-    pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/Alcatraz",
-                              1,
-                              500)
+   pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/Alcatraz",
+                             1,
+                             500)
 
