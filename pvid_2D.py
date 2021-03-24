@@ -246,7 +246,7 @@ class ParaMaster2D():
     #This function is the most important for paramecia matching in both planes. First, an empty correlation matrix is created with len(all_xy) columns and len(all_xz) rows. The datatype is a 3-element tuple that takes a pearson coefficient, a pvalue, and a time of overlap for each para object in all_xy vs all_xz. I initialize the corrmat with 0,1 and [] for each element.
 
     def refilter_para_records(self, area, reclen, avg_vel):
-        all_xy_records = self.all_xy_para_raw
+        all_xy_records = copy.deepcopy(self.all_xy_para_raw)
         all_xy_records = list(filter(lambda p: len(p.location) > reclen, all_xy_records))
         all_xy_records = list(filter(lambda p: avg_vel < p.avg_velocity, all_xy_records))
         self.all_xy_para = all_xy_records
@@ -350,7 +350,22 @@ class ParaMaster2D():
             frame_num += 1
         self.analyzed_frames = temp_frames
 
-    def manual_merge(self, rec1, rec2):
+    def merge_by_ycoord(self, ycrange):
+        in_y_range = list(map(
+            lambda p: ycrange[0] < np.mean(np.array(p.location)[:,1]) < ycrange[1],
+            self.all_xy_para))
+        print(in_y_range)
+        if sum(in_y_range) <= 1:
+            self.create_coord_matrix()
+            self.label_para()
+            return 1
+        else:
+            p1 = in_y_range.index(True)
+            p2 = in_y_range[p1+1:].index(True) + p1
+            self.manual_merge(p1, p2, False)
+            return self.merge_by_ycoord(ycrange)
+
+    def manual_merge(self, rec1, rec2, relabel):
         p1 = self.all_xy_para[rec1]
         p2 = self.all_xy_para[rec2]
         time_win1 = p1.timestamp + len(p1.location)
@@ -358,7 +373,8 @@ class ParaMaster2D():
             time_win1, p2.timestamp)] + p2.location
         del self.all_xy_para[rec2]
         self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
-        self.label_para()
+        if relabel:
+            self.label_para()
 
     def manual_remove(self, reclist):
         reclist.sort()
