@@ -16,6 +16,8 @@ from scipy.stats import mode
 import seaborn as sns
 import pandas as pd
 import itertools
+import functools
+from toolz.itertoolz import sliding_window
 
 
 class Para:
@@ -32,10 +34,14 @@ class Para:
         # max distance between para in consecutive frames in xy or xz vector space.
         self.thresh = 5
         self.double = False
+#        self.area = area
+        self.avg_velocity = 0
 
     def endrecord(self):
         # CHOPS OFF THE HANGING LEN(WAITMAX) PORTION WHERE IT COULNDT FIND PARTNER
         self.location = self.location[:-self.waitmax]
+        self.avg_velocity = np.mean(
+            [np.linalg.norm(p) for p in np.diff(self.location, axis=0)])
         self.completed = True
 
     def nearby(self, contlist):
@@ -167,6 +173,8 @@ class ParaMaster2D():
         firstframe = True
         pvid_vcap.set(curr_frame, self.framewindow[0])
         for framenum in range(self.framewindow[0], self.framewindow[1]):
+            if framenum % 100 == 0:
+                print(framenum)
             ret, im = pvid_vcap.read()
             im_gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
             im_contrasted = self.contrast_frame(framenum, im_gray,
@@ -176,7 +184,11 @@ class ParaMaster2D():
                 im_contrasted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             parafilter = [cv2.minEnclosingCircle(t)[0] for t in contours
                           if area[0] <= cv2.contourArea(t) < area[1]]
+#            parafilter = [cv2.minEnclosingCircle(t)[0] for t in contours
+ #                         if area[0] <= cv2.contourArea(t) < area[1]]
             for para in parafilter:
+                # cv2.circle(im_cont_color, (int(para[0][0]), int(para[0][1])), 2,
+                #            (255, 0, 255), -1)
                 cv2.circle(im_cont_color, (int(para[0]), int(para[1])), 2,
                            (255, 0, 255), -1)
             self.analyzed_frames.append(im_cont_color)
@@ -186,7 +198,7 @@ class ParaMaster2D():
                 para_objects = [Para(framenum, pr) for pr in parafilter]
             else:
                 xy_list = list(map(lambda n: n.nearby(parafilter), para_objects))
-                newpara = [Para(framenum, cord) for cord in parafilter]
+                newpara = [Para(framenum, pr) for pr in parafilter]
                 para_objects = para_objects + newpara
                 paramecia = list(filter(lambda x: x.completed, para_objects))
                 completed_para_records = completed_para_records + paramecia
@@ -213,6 +225,7 @@ class ParaMaster2D():
             all_xy_para = completed_para_records + para_objects
             all_xy_para = sorted(all_xy_para, key=lambda x: len(x.location))
             all_xy_para.reverse()
+            self.all_xy_para_raw = all_xy_para
             self.all_xy_para = [para for para in all_xy_para
                                 if len(para.location) > self.length_thresh]
             print('Para Found in XY')
@@ -232,7 +245,16 @@ class ParaMaster2D():
 
     #This function is the most important for paramecia matching in both planes. First, an empty correlation matrix is created with len(all_xy) columns and len(all_xz) rows. The datatype is a 3-element tuple that takes a pearson coefficient, a pvalue, and a time of overlap for each para object in all_xy vs all_xz. I initialize the corrmat with 0,1 and [] for each element.
 
+    def refilter_para_records(self, area, reclen, avg_vel):
+        all_xy_records = self.all_xy_para_raw
+        all_xy_records = list(filter(lambda p: len(p.location) > reclen, all_xy_records))
+        all_xy_records = list(filter(lambda p: avg_vel < p.avg_velocity, all_xy_records))
+        self.all_xy_para = all_xy_records
+        self.create_coord_matrix()
+        self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
+        self.label_para()
 
+    
     def watch_event(self, *make_movie):
         fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
         pvid_vw = cv2.VideoWriter('pvid_id_movie.AVI', fourcc, 30,
@@ -258,7 +280,6 @@ class ParaMaster2D():
         fc = cv2.CAP_PROP_FRAME_COUNT
         pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
         for frame in range(self.framewindow[0], self.framewindow[1]):
-            print(frame)
             ret, im = pvid_vcap.read()
             if frame % 10 == 0:
                 for para_id, xyr in enumerate(self.xy_matrix[:, frame]):
@@ -274,24 +295,24 @@ class ParaMaster2D():
                             0,
                             .5,
                             color=(255, 255, 0))
-                    if any(map(lambda x: x < frame < x + 50, self.US_frames)):
+                    if any(map(lambda x: x < frame < x + 200, self.US_frames)):
                         cv2.putText(
                             im,
                             "US ON",
-                            (20, 30),
+                            (20, 40),
                             0,
-                            2,
-                            color=(255, 0, 255),
-                            thickness=2)
-                    if any(map(lambda x: x < frame < x + 50, self.CS_frames)):
+                            1.5,
+                            color=(0, 255, 255),
+                            thickness=3)
+                    if any(map(lambda x: x < frame < x + 200, self.CS_frames)):
                         cv2.putText(
                             im,
                             "CS ON",
-                            (20, 30),
+                            (20, 40),
                             0,
-                            2,
-                            color=(100, 0, 255),
-                            thickness=2)
+                            1.5,
+                            color=(0, 125, 125),
+                            thickness=3)
                 cv2.imshow('vid', im)
                 key_entered = cv2.waitKey(1)
                 if key_entered == 50:
@@ -378,7 +399,26 @@ def plot_xy_trajectories(pmaster):
         ax.vlines(x=usframe, ymin=0, ymax=1024, color='yellow')
         ax.vlines(x=csframe, ymin=0, ymax=1024, color='gray')
     pl.show()
-    return df        
+    return df
+
+
+def ts_plot(list_of_lists):
+    fig, ax = pl.subplots(1, 1)
+    index_list = list(
+        itertools.chain.from_iterable(
+            [range(len(arr)) for arr in list_of_lists]))
+    id_list = [(ind*np.ones(len(arr))).tolist() for ind, arr in enumerate(list_of_lists)]
+    ids_concatenated = list(itertools.chain.from_iterable(id_list))
+    #this works if passed np.arrays instead of lists
+    value_list = list(itertools.chain.from_iterable(list_of_lists))
+    df_dict = {'x': index_list, 
+               'y': value_list}
+    df = pd.DataFrame(df_dict)
+    sns.lineplot(data=df, x='x', y='y', ax=ax)
+    pl.show()
+    return df
+
+
 def imcont(image, params):
     thresh, erode_win, dilate_win, med_win = params
     r, th = cv2.threshold(image, thresh, 255, cv2.THRESH_BINARY)
@@ -389,11 +429,13 @@ def imcont(image, params):
     md = cv2.medianBlur(dl, med_win)
     return md
 
+
 def calc_median(deq, nump_arr):
     # so k are the values, j are the indicies.
     for j, k in enumerate(nump_arr[:, 0]):
         nump_arr[j] = np.median([x[j] for x in deq], axis=0)
     return nump_arr
+
 
 def calc_mode(deq, nump_arr):
     for j, k in enumerate(nump_arr[:, 0]):
@@ -476,8 +518,10 @@ def make_2D_animation():
 
 if __name__ == '__main__':
 
+    a = 1
     # GOOD STARTING PARAMS
-   pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/Alcatraz",
-                             1,
+    pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/rikers1",
+                              1,
                              500)
+    
 
