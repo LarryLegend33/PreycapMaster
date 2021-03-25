@@ -37,9 +37,10 @@ class Para:
 #        self.area = area
         self.avg_velocity = 0
 
-    def endrecord(self):
+    def endrecord(self, clip):
         # CHOPS OFF THE HANGING LEN(WAITMAX) PORTION WHERE IT COULNDT FIND PARTNER
-        self.location = self.location[:-self.waitmax]
+        if clip:
+            self.location = self.location[:-self.waitmax]
         self.avg_velocity = np.mean(
             [np.linalg.norm(p) for p in np.diff(self.location, axis=0)])
         self.completed = True
@@ -63,7 +64,7 @@ class Para:
             self.location.append(self.lastcoord)
             if self.waitindex == self.waitmax:
                 #end record if you've gone 'waitmax' frames without finding anything. this value greatly changes things. its a delicate balance between losing the para and waiting too long while another para enters
-                self.endrecord()
+                self.endrecord(True)
             self.waitindex += 1
 
 # this case is only one contour is within the threshold distance to this Para.
@@ -77,7 +78,7 @@ class Para:
 
 # this case is that two or more contours fit threshold distance. stop the record and mark it as a double.
         elif pcoords.shape[0] > 1:       
-            self.endrecord()
+            self.endrecord(True)
             self.double = True
         return contlist
 
@@ -222,6 +223,7 @@ class ParaMaster2D():
         if modify == 'x':
             return ""
         else:
+            end_precs = list(map(lambda p: p.endrecord(False), para_objects))
             all_xy_para = completed_para_records + para_objects
             all_xy_para = sorted(all_xy_para, key=lambda x: len(x.location))
             all_xy_para.reverse()
@@ -243,15 +245,20 @@ class ParaMaster2D():
         else:
             return 'n'
 
-    #This function is the most important for paramecia matching in both planes. First, an empty correlation matrix is created with len(all_xy) columns and len(all_xz) rows. The datatype is a 3-element tuple that takes a pearson coefficient, a pvalue, and a time of overlap for each para object in all_xy vs all_xz. I initialize the corrmat with 0,1 and [] for each element.
-
-    def refilter_para_records(self, area, reclen, avg_vel):
+    def refilter_para_records(self, reclen, avg_vel, xb, yb, xtravel):
         all_xy_records = copy.deepcopy(self.all_xy_para_raw)
+        # this has to come first b/c p.location has to be nonzero
         all_xy_records = list(filter(lambda p: len(p.location) > reclen, all_xy_records))
-        all_xy_records = list(filter(lambda p: avg_vel < p.avg_velocity, all_xy_records))
+        all_xy_records = list(filter(lambda p: p.avg_velocity > avg_vel, all_xy_records))
+        all_xy_records = list(filter(
+             lambda p: xb[0] < np.mean(np.array(p.location)[:, 0]) < xb[1], all_xy_records))
+        all_xy_records = list(filter(
+             lambda p: yb[0] < np.mean(np.array(p.location)[:, 1]) < yb[1], all_xy_records))
+        # want an x cumulative travel cutoff.
+        all_xy_records = list(filter(lambda p: np.ptp(np.array(p.location)[:,0]) > xtravel, all_xy_records))
         self.all_xy_para = all_xy_records
-        self.create_coord_matrix()
         self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
+        self.create_coord_matrix()
         self.label_para()
 
     
@@ -294,7 +301,7 @@ class ParaMaster2D():
                              int(xyr[1])),
                             0,
                             .5,
-                            color=(255, 255, 0))
+                            color=(255, 0, 255))
                     if any(map(lambda x: x < frame < x + 200, self.US_frames)):
                         cv2.putText(
                             im,
@@ -317,6 +324,8 @@ class ParaMaster2D():
                 key_entered = cv2.waitKey(1)
                 if key_entered == 50:
                     break
+                elif key_entered == 49:
+                    cv2.waitKey(2000)
         cv2.destroyAllWindows()
         cv2.waitKey(1)
 
@@ -357,6 +366,7 @@ class ParaMaster2D():
         print(in_y_range)
         if sum(in_y_range) <= 1:
             self.create_coord_matrix()
+            self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
             self.label_para()
             return 1
         else:
@@ -390,16 +400,14 @@ class ParaMaster2D():
                              dtype='2f')
         for row, rec in enumerate(self.all_xy_para):
             xy_coords = [(np.nan, np.nan) for i in range(int(self.total_numframes))]
-#            xy_location_w_inv_y = [(x, 1024-y) for (x, y) in rec.location]
-            # xy_coords[rec.timestamp:rec.timestamp+len(
-            #     rec.location)] = xy_location_w_inv_y
             xy_coords[rec.timestamp:rec.timestamp+len(
                 rec.location)] = rec.location
             xy_matrix[row] = xy_coords
         self.xy_matrix = xy_matrix
+        np.save(self.directory + '/para_matrix.npy', xy_matrix)
 
 
-def plot_xy_trajectories(pmaster):
+def plot_x_tsplot(pmaster):
     # need random color from para object and the xy_matrix
     # dataframe needs to be like ParaID, frame, xcoord, ycoord
     fig, ax = pl.subplots(1, 2)
@@ -418,8 +426,35 @@ def plot_xy_trajectories(pmaster):
     return df
 
 
-def ts_plot(list_of_lists):
-    fig, ax = pl.subplots(1, 1)
+def plot_all_recs(pmaster):
+    fig, ax = pl.subplots()
+    for xy_rec in pmaster.xy_matrix:
+        xcoords = xy_rec[:,0]
+        avg_y_coord = np.nanmean(xy_rec[:,1])
+        ax.plot([x+avg_y_coord for x in xcoords])
+    for usframe, csframe in zip(pmaster.US_frames, pmaster.CS_frames):
+        ax.vlines(x=usframe, ymin=0, ymax=2000, color='yellow')
+        ax.vlines(x=csframe, ymin=0, ymax=2000, color='gray')
+    pl.show()
+
+    
+def us_cs_responses(pmaster):
+    fig, ax = pl.subplots(2, len(pmaster.CS_frames))
+    for c_ind, csf in enumerate(pmaster.CS_frames):
+        x_from_cs = []
+        for xyr in pmaster.xy_matrix:
+            x_from_cs.append(np.cumsum(np.diff(xyr[csf:csf+200, 0])))
+        ts_plot(x_from_cs, ax[0, c_ind], 'frame', 'x')
+    for u_ind, usf in enumerate(pmaster.US_frames):
+        x_from_us = []
+        for xyr in pmaster.xy_matrix:
+            x_from_us.append(np.cumsum(np.diff(xyr[usf:usf+200, 0])))
+        ts_plot(x_from_us, ax[1, u_ind], 'frame', 'x')
+    pl.show()
+            
+
+
+def ts_plot(list_of_lists, ax, lab_x, lab_y):
     index_list = list(
         itertools.chain.from_iterable(
             [range(len(arr)) for arr in list_of_lists]))
@@ -427,11 +462,10 @@ def ts_plot(list_of_lists):
     ids_concatenated = list(itertools.chain.from_iterable(id_list))
     #this works if passed np.arrays instead of lists
     value_list = list(itertools.chain.from_iterable(list_of_lists))
-    df_dict = {'x': index_list, 
-               'y': value_list}
+    df_dict = {lab_x: index_list, 
+               lab_y: value_list}
     df = pd.DataFrame(df_dict)
-    sns.lineplot(data=df, x='x', y='y', ax=ax)
-    pl.show()
+    sns.lineplot(data=df, x=lab_x, y=lab_y, ax=ax)
     return df
 
 
@@ -538,6 +572,6 @@ if __name__ == '__main__':
     # GOOD STARTING PARAMS
     pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/rikers1",
                               1,
-                             500)
-    
+                              500)
+    pmaster.refilter_para_records(300, .4, [140,1100], [40, 950], 20)
 
