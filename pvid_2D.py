@@ -95,6 +95,7 @@ class ParaMaster2D():
         self.dots = []
         self.analyzed_frames = deque()
         self.analyzed_frames_raw = deque()
+        self.af_mod = 5
         self.velocity_mags = []
         self.interp_indices = []
         self.sec_per_br_frame = 1
@@ -160,6 +161,7 @@ class ParaMaster2D():
                                                 np.zeros([1024, 1280])))
             ir_temp = []
         np.save(self.directory + '/backgrounds.npy', self.backgrounds)
+        pvid_vcap.release()
 
     def findpara(self, params):
         print("FINDING PARA")
@@ -185,15 +187,11 @@ class ParaMaster2D():
                 im_contrasted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             parafilter = [cv2.minEnclosingCircle(t)[0] for t in contours
                           if area[0] <= cv2.contourArea(t) < area[1]]
-#            parafilter = [cv2.minEnclosingCircle(t)[0] for t in contours
- #                         if area[0] <= cv2.contourArea(t) < area[1]]
             for para in parafilter:
-                # cv2.circle(im_cont_color, (int(para[0][0]), int(para[0][1])), 2,
-                #            (255, 0, 255), -1)
                 cv2.circle(im_cont_color, (int(para[0]), int(para[1])), 2,
                            (255, 0, 255), -1)
-            self.analyzed_frames.append(im_cont_color)
-#            self.analyzed_frames.append(im)
+            if framenum % self.af_mod == 0:
+                self.analyzed_frames.append(im_cont_color)
             if firstframe:
                 firstframe = False
                 para_objects = [Para(framenum, pr) for pr in parafilter]
@@ -208,7 +206,6 @@ class ParaMaster2D():
         self.watch_event()
         self.analyzed_frames_raw = copy.deepcopy(self.analyzed_frames)
         pvid_vcap.release()
-        # Once you get this right, give option to extend analysis until the end of the movie. 
         modify = input('Modify Videos?: ')
         if modify == 'r':
             modify = self.repeat_vids()
@@ -257,25 +254,21 @@ class ParaMaster2D():
         # want an x cumulative travel cutoff.
         all_xy_records = list(filter(lambda p: np.ptp(np.array(p.location)[:,0]) > xtravel, all_xy_records))
         self.all_xy_para = all_xy_records
-        self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
-        self.create_coord_matrix()
-        self.label_para()
-
+        self.recalculate_mat_and_labels()
     
     def watch_event(self, *make_movie):
+        self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
+        self.label_para()
         fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
         pvid_vw = cv2.VideoWriter('pvid_id_movie.AVI', fourcc, 30,
                                   (1280, 1024), True)
-
         cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
         cv2.moveWindow('vid', 20, 20)
         for fr, im in enumerate(self.analyzed_frames):
-#            im = cv2.resize(im, (800, 800))
-            if fr % 5 == 0:
-                cv2.imshow('vid', im)
-                key_entered = cv2.waitKey(1)
-                if key_entered == 50:
-                    break
+            cv2.imshow('vid', im)
+            key_entered = cv2.waitKey(1)
+            if key_entered == 50:
+                break
         cv2.destroyAllWindows()
         cv2.waitKey(1)
 
@@ -356,8 +349,11 @@ class ParaMaster2D():
                         .5,
                         color=(255, 255, 0))
             temp_frames.append(im)
-            frame_num += 1
+            frame_num += self.af_mod
         self.analyzed_frames = temp_frames
+
+    def recalculate_mat_and_labels(self):
+        self.create_coord_matrix()
 
     def merge_by_ycoord(self, ycrange):
         in_y_range = list(map(
@@ -365,40 +361,43 @@ class ParaMaster2D():
             self.all_xy_para))
         print(in_y_range)
         if sum(in_y_range) <= 1:
-            self.create_coord_matrix()
-            self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
-            self.label_para()
+            self.recalculate_mat_and_labels()
             return 1
         else:
             p1 = in_y_range.index(True)
             p2 = in_y_range[p1+1:].index(True) + p1
-            self.manual_merge(p1, p2, False)
+            self.merge_records(p1, p2, False)
             return self.merge_by_ycoord(ycrange)
 
-    def manual_merge(self, rec1, rec2, relabel):
+    def merge_records(self, rec1, rec2, relabel):
         p1 = self.all_xy_para[rec1]
         p2 = self.all_xy_para[rec2]
+        # this is correct
         time_win1 = p1.timestamp + len(p1.location)
-        p1.location = p1.location + [np.nan for i in range(
-            time_win1, p2.timestamp)] + p2.location
+        if time_win1-1 == p2.timestamp:
+            p2loc = p2.location[1:]
+        else:
+            p2loc = p2.location
+        p1.location = p1.location + [np.array([np.nan, np.nan]) for i in range(
+            time_win1, p2.timestamp)] + p2loc
         del self.all_xy_para[rec2]
-        self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
         if relabel:
-            self.label_para()
-
-    def manual_remove(self, reclist):
+            self.recalculate_mat_and_labels()
+            
+    def manual_remove(self, reclist, relabel):
         reclist.sort()
         reclist.reverse()
         for rec in reclist:
             del self.all_xy_para[rec]
-        self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
-        self.label_para()
+        if relabel:
+            self.recalculate_mat_and_labels()
 
     def create_coord_matrix(self):
         xy_matrix = np.zeros([len(self.all_xy_para),
                               int(self.total_numframes)],
                              dtype='2f')
         for row, rec in enumerate(self.all_xy_para):
+            # this is correct
             xy_coords = [(np.nan, np.nan) for i in range(int(self.total_numframes))]
             xy_coords[rec.timestamp:rec.timestamp+len(
                 rec.location)] = rec.location
@@ -440,16 +439,20 @@ def plot_all_recs(pmaster):
     
 def us_cs_responses(pmaster):
     fig, ax = pl.subplots(2, len(pmaster.CS_frames))
+    baseline = 100
+    bounds = 100
     for c_ind, csf in enumerate(pmaster.CS_frames):
         x_from_cs = []
         for xyr in pmaster.xy_matrix:
-            x_from_cs.append(np.cumsum(np.diff(xyr[csf:csf+200, 0])))
+            x_from_cs.append(np.cumsum(np.diff(xyr[csf-baseline:csf+200, 0])))
         ts_plot(x_from_cs, ax[0, c_ind], 'frame', 'x')
+        ax[0, c_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='gray')
     for u_ind, usf in enumerate(pmaster.US_frames):
         x_from_us = []
         for xyr in pmaster.xy_matrix:
-            x_from_us.append(np.cumsum(np.diff(xyr[usf:usf+200, 0])))
+            x_from_us.append(np.cumsum(np.diff(xyr[usf-baseline:usf+200, 0])))
         ts_plot(x_from_us, ax[1, u_ind], 'frame', 'x')
+        ax[1, u_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='yellow')
     pl.show()
             
 
@@ -493,13 +496,32 @@ def calc_mode(deq, nump_arr):
     return nump_arr
 
 
+def automerge_records(pmaster):
+    timethresh = 1000
+    spacethresh = 100
+    for ind, para in enumerate(pmaster.all_xy_para):
+        base_ts = para.timestamp+len(para.location)-1
+        base_pos = para.location[-1]
+        near_and_prox = list(map(lambda cp: (0 <= cp.timestamp-base_ts < timethresh) and (np.linalg.norm(cp.location[0] - base_pos) < spacethresh), pmaster.all_xy_para))
+        try:
+            cand_match = near_and_prox.index(True)
+            if cand_match == ind:
+                cand_match = near_and_prox[ind+1:](True)
+        except ValueError:
+            continue
+        pmaster.merge_records(ind, cand_match, False)
+        return automerge_records(pmaster)
+    pmaster.recalculate_mat_and_labels()
+  
+
+
 def make_paramaster(directory,
                     start_ind,
                     end_ind):
     paramaster = ParaMaster2D(directory, start_ind, end_ind)
 #    paramaster.make_backgrounds()
     paramaster.backgrounds = np.load(directory+"/backgrounds.npy")
-    paramaster.findpara([[3, 3, 5, 3], [10, 500]])
+    paramaster.findpara([[12, 1, 3, 3], [10, 500]])
     return paramaster
 
 
@@ -507,71 +529,13 @@ def find_paravectors():
     return 1
 
 
-def make_2D_animation():
-    states = np.concatenate([[x, x, x] for x in states])
-    sm_states = smooth_states(5, states)
-    print("Length of Para Record")
-    print(len(para_x))
-    fig = pl.figure(figsize=(12, 8))
-    p_xy_ax = fig.add_subplot(131)
-    p_xy_ax.set_title('XY COORDS')
-    p_xy_ax.set_xlim([0, 1888])
-    p_xy_ax.set_ylim([0, 1888])
-    p_xz_ax = fig.add_subplot(132)
-    p_xz_ax.set_title('XZ COORDS')
-    p_xz_ax.set_xlim([0, 1888])
-    p_xz_ax.set_ylim([0, 1888])
-    p_xy_ax.set_aspect('equal')
-    p_xz_ax.set_aspect('equal')
-    state_ax = fig.add_subplot(133)
-    state_ax.set_ylim([-.5, 3.5])
-    state_ax.set_xlim([0, len(para_x)])
-    state_ax.set_title('PARA STATE')
-    state_ax.set_aspect('auto', 'box-forced')
-    def updater(num, plotlist):
-        if num < 1:
-            return plotlist
-        px = para_x[num]
-        py = para_y[num]
-        pz = para_z[num]
-        px_hist = para_x[0:num]
-        py_hist = para_y[0:num]
-        pz_hist = para_z[0:num]
-        state_x = range(num)
-        state_y = states[0:num]
-#        smoothed_state_y = sm_states[0:num]
-        plotlist[2].set_data(px_hist, py_hist)
-        plotlist[3].set_data(px_hist, pz_hist)
-        plotlist[0].set_data(px, py)
-        plotlist[1].set_data(px, pz)
-        plotlist[4].set_data(state_x, state_y)
-#        plotlist[3].set_data(state_x, smoothed_state_y)
-        return plotlist
-    p_xy_line, = p_xy_ax.plot([], [], linewidth=1, color='g')
-    p_xz_line, = p_xz_ax.plot([], [], linewidth=1, color='g')
-    p_xy_plot, = p_xy_ax.plot([], [], marker='.', ms=15, color='m')
-    p_xz_plot, = p_xz_ax.plot([], [], marker='.', ms=15, color='m')
-    state_plot, = state_ax.plot([], [], marker='.', linestyle='None', color='k')
-  #  sm_state_plot, = state_ax.plot([], [], linewidth=1.0)
-    p_list = [p_xy_plot, p_xz_plot, p_xy_line, p_xz_line, state_plot]
-  # sm_state_plot]
-    line_ani = anim.FuncAnimation(
-        fig,
-        updater,
-        len(para_x),
-        fargs=[p_list],
-        interval=2,
-        repeat=True,
-        blit=True)
-#        line_ani.save('test.mp4')
-    pl.show()
-
 if __name__ == '__main__':
 
-    a = 1
-    # GOOD STARTING PARAMS
-    pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/rikers1",
+    pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/bastille1",
                               1,
                               500)
-    pmaster.refilter_para_records(300, .4, [140,1100], [40, 950], 20)
+    pmaster.refilter_para_records(300, .25, [140,1050], [40, 950], 50)
+    automerge_records(pmaster)
+
+#    [12, 1, 3, 3]
 
