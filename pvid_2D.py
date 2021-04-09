@@ -512,15 +512,16 @@ def automerge_records(pmaster):
         pmaster.merge_records(ind, cand_match, False)
         return automerge_records(pmaster)
     pmaster.recalculate_mat_and_labels()
-  
 
 
 def make_paramaster(directory,
                     start_ind,
                     end_ind):
     paramaster = ParaMaster2D(directory, start_ind, end_ind)
-#    paramaster.make_backgrounds()
-    paramaster.backgrounds = np.load(directory+"/backgrounds.npy")
+    try:
+        paramaster.backgrounds = np.load(directory+"/backgrounds.npy")
+    except:
+        paramaster.make_backgrounds()
     paramaster.findpara([[12, 1, 3, 3], [10, 500]])
     return paramaster
 
@@ -530,11 +531,12 @@ def find_paravectors():
 
 
 if __name__ == '__main__':
-
-    pmaster = make_paramaster("/Users/nightcrawler2/Dropbox/bastille1",
+    dir_input = input("Enter Directory:  ")
+    directory = "E:/ParaBehaviorData/" + dir_input
+    pmaster = make_paramaster(directory,
                               1,
                               500)
-    pmaster.refilter_para_records(300, .25, [140,1050], [40, 950], 50)
+    pmaster.refilter_para_records(300, .25, [140, 1050], [40, 950], 50)
     automerge_records(pmaster)
 
 #    [12, 1, 3, 3]
