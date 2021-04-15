@@ -95,7 +95,7 @@ class ParaMaster2D():
         self.dots = []
         self.analyzed_frames = deque()
         self.analyzed_frames_raw = deque()
-        self.af_mod = 5
+        self.af_mod = 50
         self.velocity_mags = []
         self.interp_indices = []
         self.sec_per_br_frame = 1
@@ -454,7 +454,42 @@ def us_cs_responses(pmaster):
         ts_plot(x_from_us, ax[1, u_ind], 'frame', 'x')
         ax[1, u_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='yellow')
     pl.show()
-            
+
+
+def aggregate_us_cs_responses(directories):
+    ind_cs_frames = (np.loadtxt(directories[0] + "/" + 
+                                [file_id for file_id in
+                                 os.listdir(directories[0]) if file_id[-12:] ==
+                                 'CS_times.txt'][0]) / 10).astype(np.int)
+    fig, ax = pl.subplots(2, len(ind_cs_frames))
+    baseline = 100
+    bounds = 100
+    for directory in directories:
+        xy_matrix = np.load(directory + "/para_matrix.npy")
+        us_frames = (np.loadtxt(directory + "/" +
+                                [file_id for file_id in
+                                 os.listdir(directory) if file_id[-12:] ==
+                                 'US_times.txt'][0]) / 10).astype(np.int)
+        cs_frames = (np.loadtxt(directory + "/" + 
+                                [file_id for file_id in
+                                 os.listdir(directory) if file_id[-12:] ==
+                                 'CS_times.txt'][0]) / 10).astype(np.int)
+        for c_ind, csf in enumerate(cs_frames):
+            x_from_cs = []
+            for xyr in xy_matrix:
+                x_from_cs.append(np.cumsum(np.diff(xyr[csf-baseline:csf+200, 0])))
+            ts_plot(x_from_cs, ax[0, c_ind], 'frame', 'x')
+            ax[0, c_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='gray')
+        for u_ind, usf in enumerate(us_frames):
+            x_from_us = []
+            for xyr in xy_matrix:
+                x_from_us.append(np.cumsum(np.diff(xyr[usf-baseline:usf+200, 0])))
+            ts_plot(x_from_us, ax[1, u_ind], 'frame', 'x')
+            ax[1, u_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='yellow')
+        pl.show()
+end
+    
+
 
 
 def ts_plot(list_of_lists, ax, lab_x, lab_y):
