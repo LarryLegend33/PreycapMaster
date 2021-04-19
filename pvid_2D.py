@@ -18,6 +18,9 @@ import pandas as pd
 import itertools
 import functools
 from toolz.itertoolz import sliding_window
+from matplotlib.collections import LineCollection
+from astropy.convolution import convolve, Gaussian1DKernel
+from scipy.ndimage import gaussian_filter
 
 
 class Para:
@@ -455,6 +458,44 @@ def us_cs_responses(pmaster):
         ax[1, u_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='yellow')
     pl.show()
 
+    
+def plot_xy_vs_t(pmat, rec):
+    fig, ax = pl.subplots()
+    xy_timeseries = pmat[rec]
+    ts = range(len(xy_timeseries))
+    x = np.array([x[0] for x in xy_timeseries]) # if not math.isnan(x[0])])
+    y = np.array([y[1] for y in xy_timeseries]) # if not math.isnan(y[1])])
+    segs = make_segments(x, y)
+    ax.set_xlim(np.nanmin(x), np.nanmax(x))
+    ax.set_ylim(np.nanmin(y), np.nanmax(y))
+    cmap = pl.get_cmap('viridis')
+    norm = pl.Normalize(0.0, 1.0)
+    linewidth = 3
+    alpha = 1.0
+    lc = LineCollection(segs,
+                        array=np.linspace(0.0, 1.0, len(x)),
+                        cmap=cmap,
+                        norm=norm,
+                        linewidth=linewidth,
+                        alpha=alpha)
+    ax.add_collection(lc)
+    pl.show()
+    return segs
+
+    
+
+def make_segments(x, y):
+    '''
+    Create list of line segments from x and y coordinates, in the correct format for LineCollection:
+    an array of the form   numlines x (points per line) x 2 (x and y) array
+    '''
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    return segments
+
+# Interface to LineCollection:
+    
+
 
 def aggregate_us_cs_responses(directories):
     ind_cs_frames = (np.loadtxt(directories[0] + "/" + 
@@ -463,7 +504,9 @@ def aggregate_us_cs_responses(directories):
                                  'CS_times.txt'][0]) / 10).astype(np.int)
     fig, ax = pl.subplots(2, len(ind_cs_frames))
     baseline = 100
-    bounds = 100
+    bounds = 5
+    vel_CS = {i: [] for i, j in enumerate(ind_cs_frames)}
+    vel_US = {i: [] for i, j in enumerate(ind_cs_frames)}
     for directory in directories:
         xy_matrix = np.load(directory + "/para_matrix.npy")
         us_frames = (np.loadtxt(directory + "/" +
@@ -474,23 +517,33 @@ def aggregate_us_cs_responses(directories):
                                 [file_id for file_id in
                                  os.listdir(directory) if file_id[-12:] ==
                                  'CS_times.txt'][0]) / 10).astype(np.int)
-        for c_ind, csf in enumerate(cs_frames):
-            x_from_cs = []
+        for stim_ind, (csf, usf) in enumerate(zip(cs_frames, us_frames)):
             for xyr in xy_matrix:
-                x_from_cs.append(np.cumsum(np.diff(xyr[csf-baseline:csf+200, 0])))
-            ts_plot(x_from_cs, ax[0, c_ind], 'frame', 'x')
-            ax[0, c_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='gray')
-        for u_ind, usf in enumerate(us_frames):
-            x_from_us = []
-            for xyr in xy_matrix:
-                x_from_us.append(np.cumsum(np.diff(xyr[usf-baseline:usf+200, 0])))
-            ts_plot(x_from_us, ax[1, u_ind], 'frame', 'x')
-            ax[1, u_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='yellow')
-        pl.show()
-end
-    
-
-
+                kern = Gaussian1DKernel(3)
+                x_vel = convolve(np.diff(xyr, axis=0)[:,0], kern)
+                y_vel = convolve(np.diff(xyr, axis=0)[:,1], kern)
+              #  cs_vdots = [np.dot(v1, v2) for v1, v2 in sliding_window(2, cs_vel_vectors)]
+              #  vel_CS[c_ind].append(cs_vdots)
+                xv_cs = x_vel[csf-baseline:csf+200]
+                xv_us = x_vel[usf-baseline:usf+200]
+                if np.nanmean(xv_cs[0:baseline]) < 0:
+                    xv_cs *= -1
+                vel_CS[stim_ind].append(xv_cs)
+                vel_US[stim_ind].append(xv_us)                
+              #  us_vdots = [np.dot(v1, v2) for v1, v2 in sliding_window(2, us_vel_vectors)]
+              #  vel_US[u_ind].append(us_vdots)
+    for ind, cs in enumerate(ind_cs_frames):
+        ts_plot(vel_CS[ind], ax[0, ind], 'frame', 'x')
+        print(np.nanmin(vel_CS[ind]))
+        print(np.nanmax(vel_CS[ind]))
+        print(np.nanmin(vel_US[ind]))
+        print(np.nanmax(vel_US[ind]))
+        ax[0, ind].vlines(x=baseline, ymin=-.5, ymax=.5, color='gray')
+        ax[0, ind].set_ylim(-.5, .5)
+        ts_plot(vel_US[ind], ax[1, ind], 'frame', 'x')
+        ax[1, ind].set_ylim(-.5, .5)
+        ax[1, ind].vlines(x=baseline, ymin=-.5, ymax=.5, color='yellow')
+    pl.show()
 
 def ts_plot(list_of_lists, ax, lab_x, lab_y):
     index_list = list(
@@ -549,6 +602,29 @@ def automerge_records(pmaster):
     pmaster.recalculate_mat_and_labels()
 
 
+def find_lanes_in_br(drct):
+    br = np.load(drct + "/backgrounds.npy").astype(np.uint8)
+    blurred_br = cv2.GaussianBlur(br[0], (5, 5), 0)
+    lines_through_lanes = []
+    fig, ax = pl.subplots()
+    for c in range(100, blurred_br.shape[1]-100, 100):
+    #    ax.plot(blurred_br[:, c])
+        lines_through_lanes.append(blurred_br[:, c])
+    light_profile = gaussian_filter(np.median(lines_through_lanes, axis=0), 1)
+    std_light_profile = gaussian_filter([np.std(lp) for lp in sliding_window(5, light_profile)], 1)
+    delta_light_profile = [ind for ind, lp in enumerate(sliding_window(10, light_profile)) if np.abs(lp[0]-lp[9]) > 8]
+    edges = [ind[0] for ind in sliding_window(2, delta_light_profile) if ind[0] - ind[1] < -50]
+    if np.median(light_profile[edges[0]:edges[1]]) > np.median(light_profile[edges[1]:edges[2]]):
+        lane_borders = [[edges[i], edges[i+1]] for i in range(0, len(edges) -1, 2)]
+        lane_borders = [[edges[i], edges[i+1]] for i in range(1, len(edges) -1, 2)]
+    ax.scatter(edges, np.zeros(len(edges)), color='r')
+    ax.plot(light_profile - np.mean(light_profile))
+    pl.show()
+    return lane_borders 
+
+    
+    
+
 def make_paramaster(directory,
                     start_ind,
                     end_ind):
@@ -566,13 +642,14 @@ def find_paravectors():
 
 
 if __name__ == '__main__':
-    dir_input = input("Enter Directory:  ")
-    directory = "E:/ParaBehaviorData/" + dir_input
-    pmaster = make_paramaster(directory,
-                              1,
-                              500)
-    pmaster.refilter_para_records(300, .25, [140, 1050], [40, 950], 50)
-    automerge_records(pmaster)
+    a = 1
+#    dir_input = input("Enter Directory:  ")
+ #   directory = "E:/ParaBehaviorData/" + dir_input
+#    pmaster = make_paramaster(directory,
+ #                             1,
+  #                            500)
+#    pmaster.refilter_para_records(300, .25, [140, 1050], [40, 950], 50)
+ #   automerge_records(pmaster)
 
 #    [12, 1, 3, 3]
 
