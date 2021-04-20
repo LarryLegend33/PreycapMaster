@@ -11,7 +11,7 @@ import toolz
 from scipy.stats.stats import pearsonr
 import copy
 import matplotlib.animation as anim
-from collections import deque
+from collections import deque, Counter
 from scipy.stats import mode
 import seaborn as sns
 import pandas as pd
@@ -584,17 +584,28 @@ def calc_mode(deq, nump_arr):
     return nump_arr
 
 
-def automerge_records(pmaster):
+def same_lane(ppos1, ppos2, lane_borders):
+    p1_lane = [lane for lane, lbs in enumerate(
+        lane_borders) if (lbs[0] - 10 <= ppos1[1] <= lbs[1] + 10)][0]
+    p2_lane = [lane for lane, lbs in enumerate(
+        lane_borders) if (lbs[0] - 10 <= ppos2[1] <= lbs[1] + 10)][0]
+    if p1_lane == p2_lane:
+        return True
+    else:
+        return False
+
+def automerge_records(pmaster, lane_borders):
     timethresh = 1000
     spacethresh = 100
     for ind, para in enumerate(pmaster.all_xy_para):
         base_ts = para.timestamp+len(para.location)-1
         base_pos = para.location[-1]
-        near_and_prox = list(map(lambda cp: (0 <= cp.timestamp-base_ts < timethresh) and (np.linalg.norm(cp.location[0] - base_pos) < spacethresh), pmaster.all_xy_para))
+    #    near_and_prox = list(map(lambda cp: (0 <= cp.timestamp-base_ts < timethresh) and (np.linalg.norm(cp.location[0] - base_pos) < spacethresh), pmaster.all_xy_para))
+        near_and_prox = list(map(lambda cp: (0 <= cp.timestamp-base_ts < timethresh) and same_lane(base_pos, cp.location[0], lane_borders), pmaster.all_xy_para))
         try:
             cand_match = near_and_prox.index(True)
             if cand_match == ind:
-                cand_match = near_and_prox[ind+1:](True)
+                cand_match = near_and_prox[ind+1:].index(True)
         except ValueError:
             continue
         pmaster.merge_records(ind, cand_match, False)
@@ -603,26 +614,38 @@ def automerge_records(pmaster):
 
 
 def find_lanes_in_br(drct):
-    br = np.load(drct + "/backgrounds.npy").astype(np.uint8)
-    blurred_br = cv2.GaussianBlur(br[0], (5, 5), 0)
+#    br = cv2.GaussianBlur(np.load(drct + "/backgrounds.npy").astype(np.uint8)[3], (5,5), sigmaX=1, sigmaY=1)
+    br = np.load(drct + "/backgrounds.npy").astype(np.uint8)[3]
+    pl.imshow(br)
+    pl.show()
     lines_through_lanes = []
     fig, ax = pl.subplots()
-    for c in range(100, blurred_br.shape[1]-100, 100):
-    #    ax.plot(blurred_br[:, c])
-        lines_through_lanes.append(blurred_br[:, c])
-    light_profile = gaussian_filter(np.median(lines_through_lanes, axis=0), 1)
-    std_light_profile = gaussian_filter([np.std(lp) for lp in sliding_window(5, light_profile)], 1)
-    delta_light_profile = [ind for ind, lp in enumerate(sliding_window(10, light_profile)) if np.abs(lp[0]-lp[9]) > 8]
-    edges = [ind[0] for ind in sliding_window(2, delta_light_profile) if ind[0] - ind[1] < -50]
+    for c in range(400, br.shape[1]-400, 20):
+        filtered_lane_vals = gaussian_filter(br[:, c], 3)
+        lines_through_lanes.append(filtered_lane_vals)
+    light_profile = np.median(lines_through_lanes, axis=0)
+    ax.plot(light_profile)
+#    pl.show()
+    delta_light_profile = [ind for ind, lp in enumerate(
+        sliding_window(10, light_profile)) if np.abs(lp[0]-lp[9]) > 10]
+    edges = [ind[0] for ind in sliding_window(2, delta_light_profile) if ind[0] - ind[1] < -50] + [delta_light_profile[-1]]
+    print(edges)
     if np.median(light_profile[edges[0]:edges[1]]) > np.median(light_profile[edges[1]:edges[2]]):
-        lane_borders = [[edges[i], edges[i+1]] for i in range(0, len(edges) -1, 2)]
-        lane_borders = [[edges[i], edges[i+1]] for i in range(1, len(edges) -1, 2)]
-    ax.scatter(edges, np.zeros(len(edges)), color='r')
-    ax.plot(light_profile - np.mean(light_profile))
-    pl.show()
-    return lane_borders 
+        lane_borders = [(edges[i], edges[i+1]) for i in range(0, len(edges) -1, 2)]
+    else:
+        lane_borders = [(edges[i], edges[i+1]) for i in range(1, len(edges) -1, 2)]
 
+    middle_lanes = lane_borders[1:4]
+    x_profile = gaussian_filter(np.median([br[np.mean(lb).astype(np.int), :] for lb in middle_lanes], axis=0), 3)
+    delta_x_profile = [ind for ind, xp in enumerate(
+        sliding_window(10, x_profile)) if np.abs(xp[0]-xp[9]) > 10]
+    x_edges = [ind[0] for ind in sliding_window(2, delta_x_profile) if ind[0] - ind[1] < -50] + [delta_x_profile[-1]]
+    ax.scatter([x for x in edges], np.zeros(len(edges)), color='r')
+    ax.plot(x_profile, color='g')
+    ax.scatter(x_edges, np.zeros(len(x_edges)), color='k')
+    pl.show()
     
+    return lane_borders, [x_edges[0], x_edges[-1]]
     
 
 def make_paramaster(directory,
@@ -643,13 +666,16 @@ def find_paravectors():
 
 if __name__ == '__main__':
     a = 1
-#    dir_input = input("Enter Directory:  ")
- #   directory = "E:/ParaBehaviorData/" + dir_input
-#    pmaster = make_paramaster(directory,
- #                             1,
-  #                            500)
-#    pmaster.refilter_para_records(300, .25, [140, 1050], [40, 950], 50)
- #   automerge_records(pmaster)
+    dir_input = input("Enter Directory:  ")
+    directory = "E:/ParaBehaviorData/" + dir_input
+    pmaster = make_paramaster(directory,
+                              1,
+                              500)
+    lane_boundaries, x_boundaries = find_lanes_in_br(directory)
+    pmaster.refilter_para_records(300, .25, x_boundaries,
+                                  [lane_boundaries[0][0],
+                                   lane_boundaries[-1][1]], 50)
+    automerge_records(pmaster)
 
 #    [12, 1, 3, 3]
 
