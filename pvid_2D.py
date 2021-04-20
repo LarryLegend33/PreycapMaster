@@ -245,7 +245,8 @@ class ParaMaster2D():
         else:
             return 'n'
 
-    def refilter_para_records(self, reclen, avg_vel, xb, yb, xtravel):
+    def refilter_para_records(self, reclen, avg_vel, xb, lane_b, xtravel):
+        lane_ranges = [range(l[0], l[1]) for l in lane_b] 
         all_xy_records = copy.deepcopy(self.all_xy_para_raw)
         # this has to come first b/c p.location has to be nonzero
         all_xy_records = list(filter(lambda p: len(p.location) > reclen, all_xy_records))
@@ -253,7 +254,10 @@ class ParaMaster2D():
         all_xy_records = list(filter(
              lambda p: xb[0] < np.mean(np.array(p.location)[:, 0]) < xb[1], all_xy_records))
         all_xy_records = list(filter(
-             lambda p: yb[0] < np.mean(np.array(p.location)[:, 1]) < yb[1], all_xy_records))
+             lambda p: np.array(
+                 [np.mean(
+                     np.array(p.location)[:, 1]).astype(
+                         np.int) in l for l in lane_ranges]).any(), all_xy_records))
         # want an x cumulative travel cutoff.
         all_xy_records = list(filter(lambda p: np.ptp(np.array(p.location)[:,0]) > xtravel, all_xy_records))
         self.all_xy_para = all_xy_records
@@ -672,9 +676,9 @@ if __name__ == '__main__':
                               1,
                               500)
     lane_boundaries, x_boundaries = find_lanes_in_br(directory)
-    pmaster.refilter_para_records(300, .25, x_boundaries,
-                                  [lane_boundaries[0][0],
-                                   lane_boundaries[-1][1]], 50)
+    pmaster.refilter_para_records(300, .25, x_boundaries, lane_boundaries, 50)
+                                  
+                                  
     automerge_records(pmaster)
 
 #    [12, 1, 3, 3]
