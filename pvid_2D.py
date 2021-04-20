@@ -411,18 +411,24 @@ class ParaMaster2D():
             xy_matrix[row] = xy_coords
         self.xy_matrix = xy_matrix
         np.save(self.directory + '/para_matrix.npy', xy_matrix)
+        
+
+def xymat_to_dataframe(xy_matrix, drct):
+    df_dict = {'frames': list(itertools.chain.from_iterable([
+        range(xy_matrix.shape[1]) for i in range(xy_matrix.shape[0])])),
+               'xcoords': list(itertools.chain.from_iterable([x for x in xy_matrix[:,:, 0]])),
+               'ycoords': list(itertools.chain.from_iterable([y for y in xy_matrix[:,:, 1]])),
+               'para_id': list(itertools.chain.from_iterable([i*np.ones(xy_matrix.shape[1]) for i in range(xy_matrix.shape[0])]))}
+    df = pd.DataFrame(df_dict)
+    df.to_csv(drct+"para_coords.csv")
+    return df
 
 
 def plot_x_tsplot(pmaster):
     # need random color from para object and the xy_matrix
     # dataframe needs to be like ParaID, frame, xcoord, ycoord
     fig, ax = pl.subplots(1, 2)
-    df_dict = {'frames': list(itertools.chain.from_iterable([
-        range(pmaster.xy_matrix.shape[1]) for i in range(pmaster.xy_matrix.shape[0])])),
-               'xcoords': list(itertools.chain.from_iterable([x for x in pmaster.xy_matrix[:,:, 0]])),
-               'ycoords': list(itertools.chain.from_iterable([x for x in pmaster.xy_matrix[:,:, 1]])),
-               'para_id': list(itertools.chain.from_iterable([i*np.ones(pmaster.xy_matrix.shape[1]) for i in range(pmaster.xy_matrix.shape[0])]))}
-    df = pd.DataFrame(df_dict)
+    df = xymat_to_dataframe(pmaster.xy_matrix)
     fig, ax = pl.subplots()
     sns.lineplot(data=df, x='frames', y='xcoords', ax=ax)
     for usframe, csframe in zip(pmaster.US_frames, pmaster.CS_frames):
