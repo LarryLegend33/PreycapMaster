@@ -675,7 +675,6 @@ def find_paravectors():
 
 
 if __name__ == '__main__':
-    a = 1
     dir_input = input("Enter Directory:  ")
     directory = "E:/ParaBehaviorData/" + dir_input
     pmaster = make_paramaster(directory,
@@ -683,8 +682,6 @@ if __name__ == '__main__':
                               500)
     lane_boundaries, x_boundaries = find_lanes_in_br(directory)
     pmaster.refilter_para_records(300, .25, x_boundaries, lane_boundaries, 50)
-                                  
-                                  
     automerge_records(pmaster)
 
 #    [12, 1, 3, 3]
