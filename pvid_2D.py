@@ -98,7 +98,7 @@ class ParaMaster2D():
         self.dots = []
         self.analyzed_frames = deque()
         self.analyzed_frames_raw = deque()
-        self.af_mod = 50
+        self.af_mod = 5
         self.velocity_mags = []
         self.interp_indices = []
         self.sec_per_br_frame = 1
@@ -215,6 +215,7 @@ class ParaMaster2D():
         if modify == 's':
             self.startover = True
             self.framewindow = [self.framewindow[0], int(self.total_numframes)]
+            self.af_mod = 50
             return self.findpara(params)
         if modify == 'y':
             action = input('Enter new params: ')
@@ -362,20 +363,6 @@ class ParaMaster2D():
     def recalculate_mat_and_labels(self):
         self.create_coord_matrix()
 
-    def merge_by_ycoord(self, ycrange):
-        in_y_range = list(map(
-            lambda p: ycrange[0] < np.mean(np.array(p.location)[:,1]) < ycrange[1],
-            self.all_xy_para))
-        print(in_y_range)
-        if sum(in_y_range) <= 1:
-            self.recalculate_mat_and_labels()
-            return 1
-        else:
-            p1 = in_y_range.index(True)
-            p2 = in_y_range[p1+1:].index(True) + p1
-            self.merge_records(p1, p2, False)
-            return self.merge_by_ycoord(ycrange)
-
     def merge_records(self, rec1, rec2, relabel):
         p1 = self.all_xy_para[rec1]
         p2 = self.all_xy_para[rec2]
@@ -449,7 +436,7 @@ def plot_all_recs(pmaster):
         ax.vlines(x=csframe, ymin=0, ymax=2000, color='gray')
     pl.show()
 
-    
+
 def us_cs_responses(pmaster):
     fig, ax = pl.subplots(2, len(pmaster.CS_frames))
     baseline = 100
@@ -670,9 +657,6 @@ def make_paramaster(directory,
     return paramaster
 
 
-def find_paravectors():
-    return 1
-
 
 if __name__ == '__main__':
     dir_input = input("Enter Directory:  ")
@@ -682,7 +666,7 @@ if __name__ == '__main__':
                               500)
     lane_boundaries, x_boundaries = find_lanes_in_br(directory)
     pmaster.refilter_para_records(300, .25, x_boundaries, lane_boundaries, 50)
-    automerge_records(pmaster)
+    automerge_records(pmaster, lane_boundaries)
 
 #    [12, 1, 3, 3]
 
