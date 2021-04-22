@@ -637,7 +637,8 @@ def find_lanes_in_br(drct, delta_thresh, blurval):
     x_profile = gaussian_filter(np.median([br[np.mean(lb).astype(np.int), :] for lb in middle_lanes], axis=0), 3)
     delta_x_profile = [ind for ind, xp in enumerate(
         sliding_window(10, x_profile)) if np.abs(xp[0]-xp[9]) > 10]
-    x_edges = [ind[0] for ind in sliding_window(2, delta_x_profile) if (ind[0]-ind[1] < -50) and not(ind > 250) and not(ind < 950)] + [delta_x_profile[-1]]
+    x_edges = [ind[0] for ind in sliding_window(2, delta_x_profile) if (ind[0]-ind[1] < -50) and ((ind[0] < 250) or (ind[0] > 950))] + [delta_x_profile[-1]]
+    print(x_edges)
     x_leftbound = [ind for ind in x_edges if ind < 250]
     x_rightbound = [ind for ind in x_edges if ind > 950]
     xl = np.argmax([x_profile[i] for i in x_leftbound])
