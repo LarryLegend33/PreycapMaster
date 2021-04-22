@@ -610,7 +610,7 @@ def automerge_records(pmaster, lane_borders):
     pmaster.recalculate_mat_and_labels()
 
 
-def find_lanes_in_br(drct):
+def find_lanes_in_br(drct, delta_thresh, blurval):
 #    br = cv2.GaussianBlur(np.load(drct + "/backgrounds.npy").astype(np.uint8)[3], (5,5), sigmaX=1, sigmaY=1)
     br = np.load(drct + "/backgrounds.npy").astype(np.uint8)[3]
     pl.imshow(br)
@@ -624,25 +624,29 @@ def find_lanes_in_br(drct):
     ax.plot(light_profile)
 #    pl.show()
     delta_light_profile = [ind for ind, lp in enumerate(
-        sliding_window(10, light_profile)) if np.abs(lp[0]-lp[9]) > 10]
+        sliding_window(10, light_profile)) if np.abs(lp[0]-lp[9]) > delta_thresh]
     edges = [ind[0] for ind in sliding_window(2, delta_light_profile) if ind[0] - ind[1] < -50] + [delta_light_profile[-1]]
     print(edges)
     if np.median(light_profile[edges[0]:edges[1]]) > np.median(light_profile[edges[1]:edges[2]]):
         lane_borders = [(edges[i], edges[i+1]) for i in range(0, len(edges) -1, 2)]
     else:
         lane_borders = [(edges[i], edges[i+1]) for i in range(1, len(edges) -1, 2)]
-
+    if len(lane_borders) < 5:
+        return find_lanes_in_br(drct, delta_thresh-1, blurval+1)
     middle_lanes = lane_borders[1:4]
     x_profile = gaussian_filter(np.median([br[np.mean(lb).astype(np.int), :] for lb in middle_lanes], axis=0), 3)
     delta_x_profile = [ind for ind, xp in enumerate(
         sliding_window(10, x_profile)) if np.abs(xp[0]-xp[9]) > 10]
-    x_edges = [ind[0] for ind in sliding_window(2, delta_x_profile) if ind[0] - ind[1] < -50] + [delta_x_profile[-1]]
+    x_edges = [ind[0] for ind in sliding_window(2, delta_x_profile) if (ind[0]-ind[1] < -50) and not(ind > 250) and not(ind < 950)] + [delta_x_profile[-1]]
+    x_leftbound = [ind for ind in x_edges if ind < 250]
+    x_rightbound = [ind for ind in x_edges if ind > 950]
+    xl = np.argmax([x_profile[i] for i in x_leftbound])
+    xr = np.argmax([x_profile[i] for i in x_rightbound])
     ax.scatter([x for x in edges], np.zeros(len(edges)), color='r')
     ax.plot(x_profile, color='g')
     ax.scatter(x_edges, np.zeros(len(x_edges)), color='k')
     pl.show()
-    
-    return lane_borders, [x_edges[0], x_edges[-1]]
+    return lane_borders, [x_leftbound[xl], x_rightbound[xr]]
     
 
 def make_paramaster(directory,
