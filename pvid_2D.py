@@ -4,7 +4,7 @@ import cv2
 import imageio
 from matplotlib import pyplot as pl
 import numpy as np
-import pickle
+#import pickle
 import math
 import scipy.ndimage
 import toolz
@@ -186,7 +186,7 @@ class ParaMaster2D():
             im_contrasted = self.contrast_frame(framenum, im_gray,
                                                 filtering_params)
             im_cont_color = cv2.cvtColor(im_contrasted, cv2.COLOR_GRAY2RGB)
-            rim, contours, hierarchy = cv2.findContours(
+            contours, hierarchy = cv2.findContours(
                 im_contrasted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             parafilter = [cv2.minEnclosingCircle(t)[0] for t in contours
                           if area[0] <= cv2.contourArea(t) < area[1]]
@@ -206,8 +206,9 @@ class ParaMaster2D():
                 completed_para_records = completed_para_records + paramecia
                 para_objects = list(filter(lambda x: not x.completed, para_objects))
 #current para list p_t and p_s are cleansed of records that are complete.
-        self.watch_event()
         self.analyzed_frames_raw = copy.deepcopy(self.analyzed_frames)
+        self.create_coord_matrix()
+        self.watch_event()
         pvid_vcap.release()
         modify = input('Modify Videos?: ')
         if modify == 'r':
@@ -274,7 +275,7 @@ class ParaMaster2D():
         cv2.moveWindow('vid', 20, 20)
         for fr, im in enumerate(self.analyzed_frames):
             cv2.imshow('vid', im)
-            key_entered = cv2.waitKey(1)
+            key_entered = cv2.waitKey(100)
             if key_entered == 50:
                 break
         cv2.destroyAllWindows()
@@ -363,6 +364,12 @@ class ParaMaster2D():
     def recalculate_mat_and_labels(self):
         self.create_coord_matrix()
 
+
+# have to account for fact that position may come before OR after
+
+# sort the all_xy_para results by timestamp (lowest first)
+# here, p
+
     def merge_records(self, rec1, rec2, relabel):
         p1 = self.all_xy_para[rec1]
         p2 = self.all_xy_para[rec2]
@@ -427,32 +434,14 @@ def plot_x_tsplot(pmaster):
 
 def plot_all_recs(pmaster):
     fig, ax = pl.subplots()
-    for xy_rec in pmaster.xy_matrix:
+    for p_id, xy_rec in enumerate(pmaster.xy_matrix):
+        para = pmaster.all_xy_para[p_id]
         xcoords = xy_rec[:,0]
-        avg_y_coord = np.nanmean(xy_rec[:,1])
-        ax.plot([x+avg_y_coord for x in xcoords])
+        ax.plot(xcoords)
+        ax.text(para.timestamp+len(para.location), para.location[-1][0], str(p_id))
     for usframe, csframe in zip(pmaster.US_frames, pmaster.CS_frames):
         ax.vlines(x=usframe, ymin=0, ymax=2000, color='yellow')
         ax.vlines(x=csframe, ymin=0, ymax=2000, color='gray')
-    pl.show()
-
-
-def us_cs_responses(pmaster):
-    fig, ax = pl.subplots(2, len(pmaster.CS_frames))
-    baseline = 100
-    bounds = 100
-    for c_ind, csf in enumerate(pmaster.CS_frames):
-        x_from_cs = []
-        for xyr in pmaster.xy_matrix:
-            x_from_cs.append(np.cumsum(np.diff(xyr[csf-baseline:csf+200, 0])))
-        ts_plot(x_from_cs, ax[0, c_ind], 'frame', 'x')
-        ax[0, c_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='gray')
-    for u_ind, usf in enumerate(pmaster.US_frames):
-        x_from_us = []
-        for xyr in pmaster.xy_matrix:
-            x_from_us.append(np.cumsum(np.diff(xyr[usf-baseline:usf+200, 0])))
-        ts_plot(x_from_us, ax[1, u_ind], 'frame', 'x')
-        ax[1, u_ind].vlines(x=baseline, ymin=-bounds, ymax=bounds, color='yellow')
     pl.show()
 
     
@@ -495,6 +484,7 @@ def make_segments(x, y):
 
 
 def aggregate_us_cs_responses(directories):
+    directories = ["E:/ParaBehaviorData"+"/" + d for d in directories]
     ind_cs_frames = (np.loadtxt(directories[0] + "/" + 
                                 [file_id for file_id in
                                  os.listdir(directories[0]) if file_id[-12:] ==
@@ -592,13 +582,17 @@ def same_lane(ppos1, ppos2, lane_borders):
         return False
 
 def automerge_records(pmaster, lane_borders):
-    timethresh = 1000
-    spacethresh = 100
+    spacethresh = 1000
+    min_dist = 20
     for ind, para in enumerate(pmaster.all_xy_para):
         base_ts = para.timestamp+len(para.location)-1
         base_pos = para.location[-1]
-    #    near_and_prox = list(map(lambda cp: (0 <= cp.timestamp-base_ts < timethresh) and (np.linalg.norm(cp.location[0] - base_pos) < spacethresh), pmaster.all_xy_para))
-        near_and_prox = list(map(lambda cp: (0 <= cp.timestamp-base_ts < timethresh) and same_lane(base_pos, cp.location[0], lane_borders), pmaster.all_xy_para))
+        time_between_recs = list(map(lambda cpara: cpara.timestamp-base_ts if (same_lane(base_pos, cpara.location[0], lane_borders) and cpara.timestamp-base_ts >= 0) else np.inf, pmaster.all_xy_para))
+        closest_in_time = scipy.stats.rankdata(time_between_recs)
+        near_and_prox = list(map(lambda cp: (closest_in_time[cp[0]] <= 2) and
+            (np.linalg.norm(cp[1].location[0] - base_pos) < min_dist + spacethresh*(1-math.exp(-.001*(cp[1].timestamp-base_ts)))), list(enumerate(pmaster.all_xy_para))))
+        if ind == 15:
+            print(closest_in_time, near_and_prox)
         try:
             cand_match = near_and_prox.index(True)
             if cand_match == ind:
@@ -606,15 +600,15 @@ def automerge_records(pmaster, lane_borders):
         except ValueError:
             continue
         pmaster.merge_records(ind, cand_match, False)
-        return automerge_records(pmaster)
+        return automerge_records(pmaster, lane_borders)
+    print("automerge compi")
     pmaster.recalculate_mat_and_labels()
+
 
 
 def find_lanes_in_br(drct, delta_thresh, blurval):
 #    br = cv2.GaussianBlur(np.load(drct + "/backgrounds.npy").astype(np.uint8)[3], (5,5), sigmaX=1, sigmaY=1)
     br = np.load(drct + "/backgrounds.npy").astype(np.uint8)[3]
-    pl.imshow(br)
-    pl.show()
     lines_through_lanes = []
     fig, ax = pl.subplots()
     for c in range(400, br.shape[1]-400, 20):
@@ -622,7 +616,6 @@ def find_lanes_in_br(drct, delta_thresh, blurval):
         lines_through_lanes.append(filtered_lane_vals)
     light_profile = np.median(lines_through_lanes, axis=0)
     ax.plot(light_profile)
-#    pl.show()
     delta_light_profile = [ind for ind, lp in enumerate(
         sliding_window(10, light_profile)) if np.abs(lp[0]-lp[9]) > delta_thresh]
     edges = [ind[0] for ind in sliding_window(2, delta_light_profile) if ind[0] - ind[1] < -50] + [delta_light_profile[-1]]
@@ -633,6 +626,7 @@ def find_lanes_in_br(drct, delta_thresh, blurval):
         lane_borders = [(edges[i], edges[i+1]) for i in range(1, len(edges) -1, 2)]
     if len(lane_borders) < 5:
         return find_lanes_in_br(drct, delta_thresh-1, blurval+1)
+    lane_borders = [[bounds[0]-10, bounds[1]+10] for bounds in lane_borders]
     middle_lanes = lane_borders[1:4]
     x_profile = gaussian_filter(np.median([br[np.mean(lb).astype(np.int), :] for lb in middle_lanes], axis=0), 3)
     delta_x_profile = [ind for ind, xp in enumerate(
@@ -658,19 +652,22 @@ def make_paramaster(directory,
         paramaster.backgrounds = np.load(directory+"/backgrounds.npy")
     except:
         paramaster.make_backgrounds()
-    paramaster.findpara([[12, 1, 3, 3], [10, 500]])
+    paramaster.findpara([[3, 3, 3, 5], [5, 100]])
     return paramaster
 
 
 
 if __name__ == '__main__':
+
+    # GOOD STARTING PARAMS
+    a = 1
     dir_input = input("Enter Directory:  ")
     directory = "E:/ParaBehaviorData/" + dir_input
     pmaster = make_paramaster(directory,
                               1,
-                              500)
-    lane_boundaries, x_boundaries = find_lanes_in_br(directory)
-    pmaster.refilter_para_records(300, .25, x_boundaries, lane_boundaries, 50)
+                              50)
+    lane_boundaries, x_boundaries = find_lanes_in_br(directory, 10, 3)
+    pmaster.refilter_para_records(100, .25, x_boundaries, lane_boundaries, 50)
     automerge_records(pmaster, lane_boundaries)
 
 #    [12, 1, 3, 3]
