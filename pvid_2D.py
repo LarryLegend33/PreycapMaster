@@ -573,11 +573,14 @@ def calc_mode(deq, nump_arr):
 
 def same_lane(ppos1, ppos2, lane_borders):
     p1_lane = [lane for lane, lbs in enumerate(
-        lane_borders) if (lbs[0] - 10 <= ppos1[1] <= lbs[1] + 10)][0]
+        lane_borders) if (lbs[0] - 10 <= ppos1[1] <= lbs[1] + 10)]
     p2_lane = [lane for lane, lbs in enumerate(
-        lane_borders) if (lbs[0] - 10 <= ppos2[1] <= lbs[1] + 10)][0]
-    if p1_lane == p2_lane:
-        return True
+        lane_borders) if (lbs[0] - 10 <= ppos2[1] <= lbs[1] + 10)]
+    if p1_lane and p2_lane:
+        if p1_lane == p2_lane:
+            return True
+        else:
+            return False
     else:
         return False
 
