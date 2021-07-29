@@ -3,7 +3,7 @@ import copy
 import csv
 import cv2
 import pandas as pd
-import imageio
+#import imageio
 import itertools
 from astropy.convolution import Gaussian1DKernel, convolve
 from sklearn.manifold import SpectralEmbedding
@@ -21,7 +21,7 @@ from scipy.spatial.distance import pdist, squareform
 import warnings
 from collections import deque
 import time
-from PyQt4 import QtCore, QtGui
+#from PyQt4 import QtCore, QtGui
 from matplotlib import use
 #use('TkAgg')
 use('Qt4Agg')

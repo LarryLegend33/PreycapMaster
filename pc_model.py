@@ -16,10 +16,10 @@ import pandas as pd
 import os
 import math
 from toolz.itertoolz import partition
-from para_hmm_final import ParaMarkovModel
+#from para_hmm_final import ParaMarkovModel
 import collections
 import functools
-import pomegranate
+#import pomegranate
 import bayeslite as bl
 from iventure.utils_bql import query
 from iventure.utils_bql import subsample_table_columns

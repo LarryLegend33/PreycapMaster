@@ -1,7 +1,7 @@
 import ast
 import os
 import cv2
-import imageio
+#import imageio
 from matplotlib import pyplot as pl
 import numpy as np
 import pickle
