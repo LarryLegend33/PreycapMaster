@@ -1,5 +1,7 @@
 import ast
 import os
+
+from numpy.core.defchararray import endswith
 import cv2
 import imageio
 from matplotlib import pyplot as pl
@@ -8,7 +10,7 @@ import numpy as np
 import math
 import scipy.ndimage
 import toolz
-from scipy.stats.stats import pearsonr
+from scipy.stats.stats import energy_distance, pearsonr
 import copy
 import matplotlib.animation as anim
 from collections import deque, Counter
@@ -21,6 +23,7 @@ from toolz.itertoolz import sliding_window
 from matplotlib.collections import LineCollection
 from astropy.convolution import convolve, Gaussian1DKernel
 from scipy.ndimage import gaussian_filter
+
 
 
 class Para:
@@ -88,7 +91,7 @@ class Para:
 
 class ParaMaster2D():
     def __init__(self, directory, startframe, endframe):
-        self.framerate = 100
+       
         self.directory = directory
         self.all_xy_para = []
         self.xy_matrix = []
@@ -104,18 +107,27 @@ class ParaMaster2D():
         self.sec_per_br_frame = 1
         self.frames_per_mode = 20
         self.backgrounds = []
+        self.startover = False
         self.framewindow = [startframe, endframe]
         self.pvid_id = [file_id for file_id in
-                        os.listdir(self.directory) if file_id[-4:] == '.AVI'][0]
+                        os.listdir(self.directory) if (file_id[-4:] == '.AVI' and file_id[0:4] != 'pvid')][0]
         self.total_numframes = 0
-        self.US_frames = (np.loadtxt(directory + "/" +
+        self.frametimes = []
+        self.framerate = np.loadtxt(self.directory + "/" +
+                                     [file_id for file_id in
+                                      os.listdir(self.directory) if file_id[-18:] ==
+                                      'experiment_log.txt'][0]).astype(np.float)[1]
+        self.ms_to_frame = 1000 / self.framerate
+        self.US_times = (np.loadtxt(directory + "/" +
                                      [file_id for file_id in
                                       os.listdir(self.directory) if file_id[-12:] ==
-                                      'US_times.txt'][0]) / 10).astype(np.int)
-        self.CS_frames = (np.loadtxt(directory + "/" + 
+                                      'US_times.txt'][0])).astype(np.int)
+        self.CS_times = (np.loadtxt(directory + "/" + 
                                      [file_id for file_id in
                                       os.listdir(self.directory) if file_id[-12:] ==
-                                      'CS_times.txt'][0]) / 10).astype(np.int)
+                                      'CS_times.txt'][0])).astype(np.int)
+        self.US_frames = []
+        self.CS_frames = []
         
     def exporter(self):
         print('exporting ParaMaster')
@@ -123,6 +135,32 @@ class ParaMaster2D():
             pickle.dump(self, file)
 
 # This function fits contours to each frame of the high contrast videos created in flparse2. Contours are filtered for proper paramecia size, then the locations of contours are compared to the current locations of paramecia. Locations of contours falling within a distance threshold of a known paramecia are appended to the location list for that para. At the end, individual paramecia records are established for each paramecia in the tank. Each para object is stored in the all_xy or all_xz para object list depending on plane.
+
+    def get_frametimes(self):
+        try:
+            self.frametimes = list(np.load(self.directory+"/frametimes.npy"))
+            self.US_frames = list(np.load(self.directory+"/US_frames.npy"))
+            self.CS_frames = list(np.load(self.directory+"/CS_frames.npy"))
+        except FileNotFoundError:
+            framecounter = []
+            self.frametimes = []
+            pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
+            while(True):
+                ret, im = pvid_vcap.read()
+                if not ret:
+                    break
+                img = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+                frame_id = img[0][0] + img[0][1] * 256 + img[0][2] * (256**2) + img[0][3] * (256**3)
+                framecounter.append(frame_id)
+            init_countval = framecounter[0]
+            self.frametimes = [1000*(1/self.framerate) * (v-init_countval) for v in framecounter]
+            np.save(self.directory+"/frametimes.npy", self.frametimes)
+            self.US_frames = [np.abs(np.array(self.frametimes) - usf).argmin() for usf in self.US_times]
+            self.CS_frames = [np.abs(np.array(self.frametimes) - csf).argmin() for csf in self.CS_times]
+            np.save(self.directory+"/US_frames.npy", self.US_frames)
+            np.save(self.directory+"/CS_frames.npy", self.CS_frames)
+            pvid_vcap.release()
+
 
     def contrast_frame(self, frame_id, grayframe, prms):
     # obtains correct background window
@@ -175,11 +213,14 @@ class ParaMaster2D():
         curr_frame = cv2.CAP_PROP_POS_FRAMES
         fc = cv2.CAP_PROP_FRAME_COUNT
         pvid_vcap = cv2.VideoCapture(self.directory + "/" + self.pvid_id)
+        print(self.pvid_id)
         self.total_numframes = pvid_vcap.get(fc)
+        print("TOTAL NUMBER OF FRAMES")
+        print(self.total_numframes)
         firstframe = True
         pvid_vcap.set(curr_frame, self.framewindow[0])
         for framenum in range(self.framewindow[0], self.framewindow[1]):
-            if framenum % 100 == 0:
+            if framenum % self.framerate == 0:
                 print(framenum)
             ret, im = pvid_vcap.read()
             im_gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
@@ -210,17 +251,23 @@ class ParaMaster2D():
         self.create_coord_matrix()
         self.watch_event()
         pvid_vcap.release()
-        modify = input('Modify Videos?: ')
+      #  modify = input('Modify Videos?: ')
+        if not self.startover:
+            modify = 's'
+        else:
+            modify = "n"
         if modify == 'r':
             modify = self.repeat_vids()
         if modify == 's':
             self.startover = True
             self.framewindow = [self.framewindow[0], int(self.total_numframes)]
             self.af_mod = 50
+            pvid_vcap.release()
             return self.findpara(params)
         if modify == 'y':
             action = input('Enter new params: ')
             self.analyzed_frames = deque()
+            pvid_vcap.release()
             return self.findpara(ast.literal_eval(action))
         if modify == 'x':
             return ""
@@ -265,12 +312,9 @@ class ParaMaster2D():
         self.all_xy_para = all_xy_records
         self.recalculate_mat_and_labels()
     
-    def watch_event(self, *make_movie):
+    def watch_event(self):
         self.analyzed_frames = copy.deepcopy(self.analyzed_frames_raw)
         self.label_para()
-        fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
-        pvid_vw = cv2.VideoWriter('pvid_id_movie.AVI', fourcc, 30,
-                                  (1280, 1024), True)
         cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
         cv2.moveWindow('vid', 20, 20)
         for fr, im in enumerate(self.analyzed_frames):
@@ -282,7 +326,10 @@ class ParaMaster2D():
         cv2.waitKey(1)
 
 
-    def show_labeled_ir_frames(self):
+    def show_labeled_ir_frames(self, make_movie):
+        fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
+        pvid_vw = cv2.VideoWriter(self.directory + '/pvid_id_movie.AVI', fourcc, 30,
+                                  (1280, 1024), True)
         cv2.namedWindow('vid', flags=cv2.WINDOW_AUTOSIZE)
         cv2.moveWindow('vid', 20, 20)
         curr_frame = cv2.CAP_PROP_POS_FRAMES
@@ -323,11 +370,14 @@ class ParaMaster2D():
                             color=(0, 125, 125),
                             thickness=3)
                 cv2.imshow('vid', im)
+                if make_movie:
+                    pvid_vw.write(im)
                 key_entered = cv2.waitKey(1)
                 if key_entered == 50:
                     break
                 elif key_entered == 49:
                     cv2.waitKey(2000)
+        pvid_vw.release()
         cv2.destroyAllWindows()
         cv2.waitKey(1)
 
@@ -340,7 +390,7 @@ class ParaMaster2D():
                 im = self.analyzed_frames.popleft()
             except IndexError:
                 break
-            if frame_num % 100 == 0:
+            if frame_num % self.framerate == 0:
                 print(frame_num)
             para_id = 0
             # the row index of the para3Dcooords matrix defines xyz id.
@@ -431,18 +481,29 @@ def plot_x_tsplot(pmaster):
     pl.show()
     return df
 
-
-def plot_all_recs(pmaster):
+def plot_all_recs(directory):
+    framerate = np.loadtxt(
+        directory + "/" + [file_id for file_id in os.listdir(
+            directory) if file_id[-18:] == 'experiment_log.txt'][0]).astype(np.float)[1]
+    ms_to_frame = 1000 / framerate
     fig, ax = pl.subplots()
-    for p_id, xy_rec in enumerate(pmaster.xy_matrix):
-        para = pmaster.all_xy_para[p_id]
+    frametimes = np.load(directory +"/frametimes.npy")
+    pmat = np.load(directory+"/para_matrix.npy")
+    us_frames = np.load(directory + "/US_frames.npy")
+    cs_frames = np.load(directory + "/CS_frames.npy")
+    for p_id, xy_rec in enumerate(pmat):
+        para = xy_rec
         xcoords = xy_rec[:,0]
         ax.plot(xcoords)
-        ax.text(para.timestamp+len(para.location), para.location[-1][0], str(p_id))
-    for usframe, csframe in zip(pmaster.US_frames, pmaster.CS_frames):
+        last_nonnan = len(xcoords) - np.argmax([not math.isnan(x) for x in xcoords[::-1]]) - 1
+        ax.text(last_nonnan, xcoords[last_nonnan], str(p_id))
+    for usframe, csframe in zip(us_frames, cs_frames):
         ax.vlines(x=usframe, ymin=0, ymax=2000, color='yellow')
         ax.vlines(x=csframe, ymin=0, ymax=2000, color='gray')
+    pl.savefig(directory+"/allrecsplot.png")
     pl.show()
+    
+
 
     
 def plot_xy_vs_t(pmat, rec):
@@ -483,54 +544,85 @@ def make_segments(x, y):
     
 
 
-def aggregate_us_cs_responses(directories):
-    directories = ["E:/ParaBehaviorData"+"/" + d for d in directories]
+def aggregate_us_cs_responses(directories, plot_or_not):
+  #  directories = 00
+    framerate = np.loadtxt(
+        directories[0] + "/" + [file_id for file_id in os.listdir(
+            directories[0]) if file_id[-18:] == 'experiment_log.txt'][0]).astype(np.float)[1]
+    ms_to_frame = 1000 / framerate
     ind_cs_frames = (np.loadtxt(directories[0] + "/" + 
                                 [file_id for file_id in
                                  os.listdir(directories[0]) if file_id[-12:] ==
                                  'CS_times.txt'][0]) / 10).astype(np.int)
     fig, ax = pl.subplots(2, len(ind_cs_frames))
-    baseline = 100
+    baseline = 200
     bounds = 5
     vel_CS = {i: [] for i, j in enumerate(ind_cs_frames)}
     vel_US = {i: [] for i, j in enumerate(ind_cs_frames)}
-    for directory in directories:
+    vel_CS_w_id = {i: [] for i, j in enumerate(ind_cs_frames)}
+    p_id_counter = 0
+    for d_ind, directory in enumerate(directories):
         xy_matrix = np.load(directory + "/para_matrix.npy")
-        us_frames = (np.loadtxt(directory + "/" +
-                                [file_id for file_id in
-                                 os.listdir(directory) if file_id[-12:] ==
-                                 'US_times.txt'][0]) / 10).astype(np.int)
-        cs_frames = (np.loadtxt(directory + "/" + 
-                                [file_id for file_id in
-                                 os.listdir(directory) if file_id[-12:] ==
-                                 'CS_times.txt'][0]) / 10).astype(np.int)
+        us_frames = np.load(directory + "/US_frames.npy")
+        cs_frames = np.load(directory + "/CS_frames.npy")
         for stim_ind, (csf, usf) in enumerate(zip(cs_frames, us_frames)):
-            for xyr in xy_matrix:
+            for (p_id, xyr) in enumerate(xy_matrix):
                 kern = Gaussian1DKernel(3)
-                x_vel = convolve(np.diff(xyr, axis=0)[:,0], kern)
-                y_vel = convolve(np.diff(xyr, axis=0)[:,1], kern)
+              #  x_vel = convolve(np.diff(xyr, axis=0)[:,0], kern)
+              #  y_vel = convolve(np.diff(xyr, axis=0)[:,1], kern)
               #  cs_vdots = [np.dot(v1, v2) for v1, v2 in sliding_window(2, cs_vel_vectors)]
               #  vel_CS[c_ind].append(cs_vdots)
-                xv_cs = x_vel[csf-baseline:csf+200]
-                xv_us = x_vel[usf-baseline:usf+200]
+                xv_cs = np.diff(xyr[csf-baseline:csf+200], axis=0)[:,0]
+                xv_us = np.diff(xyr[usf-baseline:usf+200], axis=0)[:,0]
                 if np.nanmean(xv_cs[0:baseline]) < 0:
                     xv_cs *= -1
-                vel_CS[stim_ind].append(xv_cs)
-                vel_US[stim_ind].append(xv_us)                
+                # filters for broken records but not as harshly b/c its a longer window
+                if sum(np.array([math.isnan(xval) for xval in xv_cs])) < 300 and not xv_cs.size == 0:
+              #  if not np.array([math.isnan(xval) for xval in xv_cs]).any() and not xv_cs.size == 0:
+                    print(p_id + p_id_counter)
+                    print(sum(np.array([math.isnan(xval) for xval in xv_cs])))
+                    vel_CS[stim_ind].append(convolve(xv_cs, kern, boundary='extend'))
+                    vel_CS_w_id[stim_ind].append((p_id+p_id_counter, convolve(xv_cs, kern, boundary='extend')))
+                if not np.array([math.isnan(xval) for xval in xv_us]).any() and not xv_us.size == 0:
+                    vel_US[stim_ind].append(convolve(xv_us, kern, boundary='extend'))                
               #  us_vdots = [np.dot(v1, v2) for v1, v2 in sliding_window(2, us_vel_vectors)]
               #  vel_US[u_ind].append(us_vdots)
-    for ind, cs in enumerate(ind_cs_frames):
-        ts_plot(vel_CS[ind], ax[0, ind], 'frame', 'x')
-        print(np.nanmin(vel_CS[ind]))
-        print(np.nanmax(vel_CS[ind]))
-        print(np.nanmin(vel_US[ind]))
-        print(np.nanmax(vel_US[ind]))
-        ax[0, ind].vlines(x=baseline, ymin=-.5, ymax=.5, color='gray')
-        ax[0, ind].set_ylim(-.5, .5)
-        ts_plot(vel_US[ind], ax[1, ind], 'frame', 'x')
-        ax[1, ind].set_ylim(-.5, .5)
-        ax[1, ind].vlines(x=baseline, ymin=-.5, ymax=.5, color='yellow')
-    pl.show()
+        p_id_counter += xy_matrix.shape[0]
+    if plot_or_not:
+        for ind, cs in enumerate(ind_cs_frames):
+            ts_plot(vel_CS[ind], ax[0, ind], 'frame', 'x')
+            ax[0, ind].vlines(x=baseline, ymin=-.5, ymax=.5, color='gray')
+            ax[0, ind].set_ylim(-.5, .5)
+            ts_plot(vel_US[ind], ax[1, ind], 'frame', 'x')
+            ax[1, ind].set_ylim(-.5, .5)
+            ax[1, ind].vlines(x=baseline, ymin=-.5, ymax=.5, color='yellow')
+        pl.savefig("E:/ParaBehaviorData/aggregated_responses.png")
+        pl.show()
+    us_cs_dict_to_csv(vel_CS_w_id, cs_frames)
+    return vel_CS_w_id, cs_frames
+
+def us_cs_dict_to_csv(p_dict, cs_frames):
+    directory = "E:/ParaBehaviorData/"
+    window_size = len(p_dict[0][0][1])
+    frame_windows = []
+    para_ids = []
+    para_velocity = []
+    trial_id = []
+    for cs_ind, csf in enumerate(cs_frames):
+        for rec in p_dict[cs_ind]:
+           # frame_windows.append(range(csf-200, csf-200+window_size))
+            frame_windows.append(range(-200, -200+window_size))
+            para_ids.append(list(rec[0]*np.ones(window_size)))
+            para_velocity.append(rec[1])
+            trial_id.append(list(cs_ind*np.ones(window_size)))
+    # this is just compiling lists into a single list
+    df_dict = {'frame_index': list(itertools.chain.from_iterable(frame_windows)),
+               'para_id': list(itertools.chain.from_iterable(para_ids)),
+               'trial': list(itertools.chain.from_iterable(trial_id)),
+               'velocity': list(itertools.chain.from_iterable(para_velocity))}
+    df = pd.DataFrame(df_dict)
+    df.to_csv(directory+"para_aggregate.csv")
+
 
 def ts_plot(list_of_lists, ax, lab_x, lab_y):
     index_list = list(
@@ -584,34 +676,90 @@ def same_lane(ppos1, ppos2, lane_borders):
     else:
         return False
 
+def re_automerge(pmaster, x_boundaries, lane_boundaries):
+    pmaster.refilter_para_records(100, .25, x_boundaries, lane_boundaries, 50)
+    automerge_records(pmaster, lane_boundaries)
+    pmaster.show_labeled_ir_frames(True) 
+    plot_all_recs(pmaster.directory)
+
 def automerge_records(pmaster, lane_borders):
     spacethresh = 1000
     min_dist = 20
     for ind, para in enumerate(pmaster.all_xy_para):
         base_ts = para.timestamp+len(para.location)-1
         base_pos = para.location[-1]
-        time_between_recs = list(map(lambda cpara: cpara.timestamp-base_ts if (same_lane(base_pos, cpara.location[0], lane_borders) and cpara.timestamp-base_ts >= 0) else np.inf, pmaster.all_xy_para))
-        closest_in_time = scipy.stats.rankdata(time_between_recs)
-        near_and_prox = list(map(lambda cp: (closest_in_time[cp[0]] <= 2) and
-            (np.linalg.norm(cp[1].location[0] - base_pos) < min_dist + spacethresh*(1-math.exp(-.001*(cp[1].timestamp-base_ts)))), list(enumerate(pmaster.all_xy_para))))
-        if ind == 15:
-            print(closest_in_time, near_and_prox)
+        time_between_recs_forward = list(map(lambda cpara: cpara.timestamp-base_ts if (
+            same_lane(base_pos, cpara.location[0], lane_borders) and cpara.timestamp-base_ts >= 0 and (base_pos != cpara.location[-1]).all()) else np.inf, pmaster.all_xy_para))
         try:
-            cand_match = near_and_prox.index(True)
-            if cand_match == ind:
-                cand_match = near_and_prox[ind+1:].index(True)
-        except ValueError:
+            closest_in_time_forward = np.where(scipy.stats.rankdata(time_between_recs_forward) < 2)[0]
+            if len(closest_in_time_forward) > 1:
+                pos_cand1 = pmaster.all_xy_para[closest_in_time_forward[0]].location[0]
+                pos_cand2 = pmaster.all_xy_para[closest_in_time_forward[1]].location[0] 
+                dist_from_curr_para = [np.linalg.norm(pos_cand1-base_pos), np.linalg.norm(pos_cand2-base_pos)]
+                if dist_from_curr_para[0] > dist_from_curr_para[1]:
+                    closest_in_time_forward = closest_in_time_forward[1]
+                else:
+                    closest_in_time_forward = closest_in_time_forward[0]
+            else:
+                closest_in_time_forward = closest_in_time_forward[0]
+            # if they are the same, give back the closer of the two instead of the first. 
+            # do the same with backward!
+        
+
+        except IndexError:
             continue
-        pmaster.merge_records(ind, cand_match, False)
-        return automerge_records(pmaster, lane_borders)
-    print("automerge compi")
+        print(closest_in_time_forward)
+        closest_t_para = pmaster.all_xy_para[closest_in_time_forward]
+        time_between_recs_backward = list(map(lambda cpara: closest_t_para.timestamp-(cpara.timestamp+len(cpara.location)-1) if (
+            same_lane(closest_t_para.location[0], cpara.location[-1], lane_borders) and closest_t_para.timestamp-(
+                cpara.timestamp+len(cpara.location)-1) >= 0 and (closest_t_para.location[-1] != cpara.location[-1]).all()) else np.inf, pmaster.all_xy_para))
+        closest_in_time_backward = np.where(scipy.stats.rankdata(time_between_recs_backward) < 2)[0]
+         
+        if ind in closest_in_time_backward:
+          #  if len(closest_in_time_backward) > 1:
+           #    p1_loc = pmaster.all_xy_para[closest_in_time_backward[0]].location[-1] 
+
+            print("MERGING" + str(closest_in_time_forward))
+            pmaster.merge_records(ind, closest_in_time_forward, False)
+            return automerge_records(pmaster, lane_borders)
+        else:
+            continue
+
+        # near_and_prox = list(map(lambda cp: (closest_in_time[cp[0]] == 1) and
+        #     (np.linalg.norm(cp[1].location[0] - base_pos) < min_dist + spacethresh*(1-math.exp(-.001*(cp[1].timestamp-base_ts)))), list(enumerate(pmaster.all_xy_para))))
+        # try:
+        #     cand_match = near_and_prox.index(True)
+        #     if cand_match == ind:
+        #         cand_match = near_and_prox[ind+1:].index(True)
+        # except ValueError:
+        #     continue
+       
+    print("automerge complete")
     pmaster.recalculate_mat_and_labels()
 
+def grab_random_frames(directory, num_random_frames):
+    pvid_id = [file_id for file_id in
+                         os.listdir(directory) if (file_id[-4:] == '.AVI' and file_id[0:4] != 'pvid')][0]
+    curr_frame = cv2.CAP_PROP_POS_FRAMES
+    fc = cv2.CAP_PROP_FRAME_COUNT
+    pvid_vcap = cv2.VideoCapture(directory + "/" + pvid_id)
+    total_numframes = pvid_vcap.get(fc)
+    random_frames = [np.random.randint(total_numframes) for i in range(num_random_frames)]
+    frameholder = []
+    for frame in random_frames:
+        pvid_vcap.set(curr_frame, frame)
+        ret, im = pvid_vcap.read()
+        img = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+        frameholder.append(img)
+    md = calc_median(frameholder, np.zeros([1024, 1280]))
+    pvid_vcap.release()
+    return md
 
-
-def find_lanes_in_br(drct, delta_thresh, blurval):
+def find_lanes_in_br(br, delta_thresh, blurval):
 #    br = cv2.GaussianBlur(np.load(drct + "/backgrounds.npy").astype(np.uint8)[3], (5,5), sigmaX=1, sigmaY=1)
-    br = np.load(drct + "/backgrounds.npy").astype(np.uint8)[3]
+    if delta_thresh < 5:
+        return [], []
+    #br = np.load(drct + "/backgrounds.npy").astype(np.uint8)[3]
     lines_through_lanes = []
     fig, ax = pl.subplots()
     for c in range(400, br.shape[1]-400, 20):
@@ -622,14 +770,18 @@ def find_lanes_in_br(drct, delta_thresh, blurval):
     delta_light_profile = [ind for ind, lp in enumerate(
         sliding_window(10, light_profile)) if np.abs(lp[0]-lp[9]) > delta_thresh]
     edges = [ind[0] for ind in sliding_window(2, delta_light_profile) if ind[0] - ind[1] < -50] + [delta_light_profile[-1]]
+    if edges[0] > 100:
+        edges = [0] + edges
+    if edges[-1] < 924:
+        edges = edges + [1024]
     print(edges)
+    if len(edges) < 10:
+        return find_lanes_in_br(br, delta_thresh-1, blurval+.5)
     if np.median(light_profile[edges[0]:edges[1]]) > np.median(light_profile[edges[1]:edges[2]]):
         lane_borders = [(edges[i], edges[i+1]) for i in range(0, len(edges) -1, 2)]
     else:
         lane_borders = [(edges[i], edges[i+1]) for i in range(1, len(edges) -1, 2)]
-    if len(lane_borders) < 5:
-        return find_lanes_in_br(drct, delta_thresh-1, blurval+1)
-    lane_borders = [[bounds[0]-10, bounds[1]+10] for bounds in lane_borders]
+    lane_borders = [[bounds[0]-15, bounds[1]+15] for bounds in lane_borders]
     middle_lanes = lane_borders[1:4]
     x_profile = gaussian_filter(np.median([br[np.mean(lb).astype(np.int), :] for lb in middle_lanes], axis=0), 3)
     delta_x_profile = [ind for ind, xp in enumerate(
@@ -638,19 +790,34 @@ def find_lanes_in_br(drct, delta_thresh, blurval):
     print(x_edges)
     x_leftbound = [ind for ind in x_edges if ind < 250]
     x_rightbound = [ind for ind in x_edges if ind > 950]
-    xl = np.argmax([x_profile[i] for i in x_leftbound])
-    xr = np.argmax([x_profile[i] for i in x_rightbound])
-    ax.scatter([x for x in edges], np.zeros(len(edges)), color='r')
-    ax.plot(x_profile, color='g')
-    ax.scatter(x_edges, np.zeros(len(x_edges)), color='k')
-    pl.show()
-    return lane_borders, [x_leftbound[xl], x_rightbound[xr]]
+    if not x_leftbound and not x_rightbound:
+        return lane_borders, []
+    elif not x_leftbound:
+        xr = np.argmax([x_profile[i] for i in x_rightbound])
+        x_right = x_rightbound[xr]
+        x_left = x_right - 1050
+    elif not x_rightbound:
+        xl = np.argmax([x_profile[i] for i in x_leftbound])
+        x_left = x_leftbound[xl]
+        x_right = x_left + 1050
+    else:
+        xl = np.argmax([x_profile[i] for i in x_leftbound])
+        xr = np.argmax([x_profile[i] for i in x_rightbound])
+        x_left = x_leftbound[xl]
+        x_right = x_rightbound[xr]
+   # ax.scatter([x for x in edges], np.zeros(len(edges)), color='r')
+   # ax.plot(x_profile, color='g')
+   # ax.scatter(x_edges, np.zeros(len(x_edges)), color='k')
+   # pl.show()
+    return lane_borders, [x_left, x_right]
     
+
 
 def make_paramaster(directory,
                     start_ind,
                     end_ind):
     paramaster = ParaMaster2D(directory, start_ind, end_ind)
+    paramaster.get_frametimes()
     try:
         paramaster.backgrounds = np.load(directory+"/backgrounds.npy")
     except:
@@ -663,15 +830,43 @@ def make_paramaster(directory,
 if __name__ == '__main__':
 
     # GOOD STARTING PARAMS
-    a = 1
-    dir_input = input("Enter Directory:  ")
-    directory = "E:/ParaBehaviorData/" + dir_input
-    pmaster = make_paramaster(directory,
-                              1,
-                              50)
-    lane_boundaries, x_boundaries = find_lanes_in_br(directory, 10, 3)
-    pmaster.refilter_para_records(100, .25, x_boundaries, lane_boundaries, 50)
-    automerge_records(pmaster, lane_boundaries)
-
-#    [12, 1, 3, 3]
-
+    dir_input = input("Enter Directories:  ")
+    directory_list = ["E:/ParaBehaviorData/" + di for di in eval(dir_input)]
+    lane_boundary_list = []
+    x_boundary_list = []
+    for directory in directory_list:
+        try:
+            lane_boundaries = list(np.load(directory + "/lane_boundaries.npy"))
+            x_boundaries = list(np.load(directory + "/x_boundaries.npy"))
+        except FileNotFoundError:
+            br = grab_random_frames(directory, 5)
+            try:
+                lane_boundaries, x_boundaries = find_lanes_in_br(br, 10, 3)
+            except IndexError:
+                lane_boundaries = []
+                x_boundaries = []
+        if len(lane_boundaries) < 5:
+            lane_boundaries = eval(input("Enter Lane Boundaries For " + directory + ":"))
+        if len(x_boundaries) < 2:
+            x_boundaries = eval(input("Enter X Boundaries For " + directory + ":"))     
+        np.save(directory + "/lane_boundaries.npy", lane_boundaries)
+        np.save(directory + "/x_boundaries.npy", x_boundaries)
+        lane_boundary_list.append(lane_boundaries)
+        x_boundary_list.append(x_boundaries)
+    for d_ind, directory in enumerate(directory_list):
+        lane_boundaries = lane_boundary_list[d_ind]
+        x_boundaries = x_boundary_list[d_ind]
+        print(directory)
+        pmaster = make_paramaster(directory,
+                                  1,
+                                  50)
+        
+        pmaster.refilter_para_records(100, .25, x_boundaries, lane_boundaries, 50)
+        automerge_records(pmaster, lane_boundaries)
+        pmaster.show_labeled_ir_frames(True) 
+  #  for d in directory_list:
+  #      plot_all_recs(d) 
+    aggregate_us_cs_responses(directory_list, False)
+#drclist = ['E:/ParaBehaviorData/test70_US_' + d for d in ['a', 'b', 'c', 'd', 'f']]
+#aggregate_us_cs_responses(drclist, False)
+    
